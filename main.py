@@ -217,6 +217,63 @@ def select_pdf_filename(title_with_subject: str) -> str:
         return clean_title(core)
     return clean_title(title_no_subject)
 
+# --- Bot API helpers for forum topics (works even if Pyrogram runtime lacks message_thread_id) ---
+BOT_API_BASE = None
+
+def _bot_api_base() -> str:
+    global BOT_API_BASE
+    base = f"https://api.telegram.org/bot{BOT_TOKEN}"
+    return base
+
+async def bot_api_create_forum_topic(chat_id: int, title: str) -> Optional[int]:
+    url = _bot_api_base() + "/createForumTopic"
+    payload = {"chat_id": chat_id, "name": title}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, timeout=30) as resp:
+            data = await resp.json(content_type=None)
+            if not data.get("ok"):
+                raise Exception(f"BotAPI createForumTopic failed: {data}")
+            return data.get("result", {}).get("message_thread_id")
+
+async def bot_api_send_message(chat_id: int, thread_id: int, text: str) -> None:
+    url = _bot_api_base() + "/sendMessage"
+    payload = {"chat_id": chat_id, "message_thread_id": thread_id, "text": text, "disable_web_page_preview": False}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, timeout=30) as resp:
+            data = await resp.json(content_type=None)
+            if not data.get("ok"):
+                raise Exception(f"BotAPI sendMessage failed: {data}")
+
+async def bot_api_send_document(chat_id: int, thread_id: int, file_path: str, caption: str) -> None:
+    url = _bot_api_base() + "/sendDocument"
+    form = aiohttp.FormData()
+    form.add_field("chat_id", str(chat_id))
+    form.add_field("message_thread_id", str(thread_id))
+    form.add_field("caption", caption)
+    form.add_field("document", open(file_path, "rb"), filename=os.path.basename(file_path))
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, data=form, timeout=300) as resp:
+            data = await resp.json(content_type=None)
+            if not data.get("ok"):
+                raise Exception(f"BotAPI sendDocument failed: {data}")
+
+async def bot_api_send_video(chat_id: int, thread_id: int, file_path: str, caption: str, duration: Optional[int] = None, thumb_path: Optional[str] = None) -> None:
+    url = _bot_api_base() + "/sendVideo"
+    form = aiohttp.FormData()
+    form.add_field("chat_id", str(chat_id))
+    form.add_field("message_thread_id", str(thread_id))
+    form.add_field("caption", caption)
+    if duration is not None:
+        form.add_field("duration", str(int(duration)))
+    form.add_field("video", open(file_path, "rb"), filename=os.path.basename(file_path))
+    if thumb_path and os.path.exists(thumb_path):
+        form.add_field("thumbnail", open(thumb_path, "rb"), filename=os.path.basename(thumb_path))
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, data=form, timeout=600) as resp:
+            data = await resp.json(content_type=None)
+            if not data.get("ok"):
+                raise Exception(f"BotAPI sendVideo failed: {data}")
+
 # --- NEW: http download helper (async) ---
 async def _download_http_to_file(session: aiohttp.ClientSession, url: str, tmp_path: str) -> None:
     """
@@ -347,51 +404,32 @@ async def upload_file_to_channel(
                 thumb = await extract_thumbnail_async(file_path)
                 duration = int(await duration_async(file_path))
                 try:
-                    try:
+                    # If we have a thread id, use Bot API to ensure routing into topic
+                    if message_thread_id is not None:
+                        await bot_api_send_video(channel_id, message_thread_id, file_path, caption, duration=duration, thumb_path=thumb)
+                    else:
                         await bot.send_video(
                             chat_id=channel_id,
                             video=file_path,
                             caption=caption,
-                            message_thread_id=message_thread_id,
                             thumb=thumb,
                             duration=duration,
                             supports_streaming=True
                         )
-                    except TypeError as te:
-                        # Older Pyrogram/Bot API may not support message_thread_id
-                        if "message_thread_id" in str(te):
-                            await bot.send_video(
-                                chat_id=channel_id,
-                                video=file_path,
-                                caption=caption,
-                                thumb=thumb,
-                                duration=duration,
-                                supports_streaming=True
-                            )
-                        else:
-                            raise
                     return True
                 finally:
                     if thumb and os.path.exists(thumb):
                         os.remove(thumb)
             else:
                 # For non‐video files, send as document
-                try:
+                if message_thread_id is not None:
+                    await bot_api_send_document(channel_id, message_thread_id, file_path, caption)
+                else:
                     await bot.send_document(
                         chat_id=channel_id,
                         document=file_path,
-                        caption=caption,
-                        message_thread_id=message_thread_id
+                        caption=caption
                     )
-                except TypeError as te:
-                    if "message_thread_id" in str(te):
-                        await bot.send_document(
-                            chat_id=channel_id,
-                            document=file_path,
-                            caption=caption
-                        )
-                    else:
-                        raise
                 return True
 
         except FloodWait as e:
@@ -610,15 +648,9 @@ async def start_processing(client: Client, message: Message, user_id: int):
                             if isinstance(cached, int):
                                 thread_id = cached
                                 logger.info(f"Reusing cached forum topic '{subject}' with thread_id={thread_id}")
-                        # If not in cache, create the topic
+                        # If not in cache, create the topic via Bot API (works on Koyeb)
                         if not thread_id:
-                            topic_result = await client.create_forum_topic(channel_id, subject)
-                        # Try to get thread id from returned result with multiple fallbacks
-                            thread_id = (
-                                getattr(topic_result, "id", None)
-                                or getattr(topic_result, "message_thread_id", None)
-                                or (getattr(getattr(topic_result, "topic", None), "id", None))
-                            )
+                            thread_id = await bot_api_create_forum_topic(channel_id, subject)
                         if not thread_id:
                             raise Exception("Could not determine message_thread_id for created topic")
                         subject_threads[subject] = thread_id
@@ -626,10 +658,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
                         chat_cache[subject_norm] = thread_id
                         save_forum_cache(forum_cache)
                         await mongo_set_thread_id(channel_id, subject_norm, thread_id)
-                        if 'topic_result' in locals() and topic_result and thread_id:
-                            logger.info(f"Created forum topic '{subject}' with thread_id={thread_id}")
-                        else:
-                            logger.info(f"Reusing forum topic '{subject}' with thread_id={thread_id}")
+                        logger.info(f"Created forum topic '{subject}' with thread_id={thread_id}")
                     else:
                         logger.info(f"Reusing forum topic '{subject}' with thread_id={thread_id}")
                     current_thread_id = thread_id
@@ -740,12 +769,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
         if is_forum and not success and subject_threads.get(subject) == chat_cache.get(subject_norm):
             try:
                 logger.info(f"Retrying by creating a fresh topic for subject '{subject}' due to failure in cached thread_id")
-                topic_result = await client.create_forum_topic(channel_id, subject)
-                new_thread_id = (
-                    getattr(topic_result, "id", None)
-                    or getattr(topic_result, "message_thread_id", None)
-                    or (getattr(getattr(topic_result, "topic", None), "id", None))
-                )
+                new_thread_id = await bot_api_create_forum_topic(channel_id, subject)
                 if new_thread_id:
                     subject_threads[subject] = new_thread_id
                     chat_cache[subject_norm] = new_thread_id
