@@ -274,6 +274,25 @@ async def bot_api_send_video(chat_id: int, thread_id: int, file_path: str, capti
             if not data.get("ok"):
                 raise Exception(f"BotAPI sendVideo failed: {data}")
 
+async def bot_api_get_chat(chat_id: int) -> dict:
+    url = _bot_api_base() + "/getChat"
+    params = {"chat_id": chat_id}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params=params, timeout=30) as resp:
+            data = await resp.json(content_type=None)
+            if not data.get("ok"):
+                raise Exception(f"BotAPI getChat failed: {data}")
+            return data.get("result", {})
+
+async def bot_api_pin_message(chat_id: int, message_id: int) -> None:
+    url = _bot_api_base() + "/pinChatMessage"
+    payload = {"chat_id": chat_id, "message_id": message_id}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, timeout=30) as resp:
+            data = await resp.json(content_type=None)
+            if not data.get("ok"):
+                raise Exception(f"BotAPI pinChatMessage failed: {data}")
+
 # --- NEW: http download helper (async) ---
 async def _download_http_to_file(session: aiohttp.ClientSession, url: str, tmp_path: str) -> None:
     """
@@ -579,14 +598,14 @@ async def start_processing(client: Client, message: Message, user_id: int):
     downloaded_by = data["downloaded_by"]
     total = data["total"]
 
-    # Detect if the target is a forum-enabled supergroup
+    # Detect if the target is a forum-enabled supergroup using Bot API
     try:
-        chat = await client.get_chat(channel_id)
-        is_forum = bool(getattr(chat, "is_forum", False))
+        chat_info = await bot_api_get_chat(channel_id)
+        is_forum = bool(chat_info.get("is_forum", False))
         logger.info(f"Target chat {channel_id}: is_forum={is_forum}")
-    except Exception:
+    except Exception as e:
         is_forum = False
-        logger.warning(f"Could not fetch chat info for {channel_id}; assuming is_forum=False")
+        logger.warning(f"Could not fetch chat info for {channel_id} via Bot API; assuming is_forum=False ({e})")
     subject_threads: Dict[str, int] = {}
     current_thread_id: Optional[int] = None
     # Load persistent cache and prepare per-chat view
@@ -676,22 +695,31 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     is_forum = False
                     current_thread_id = None
             else:
-                # Non-forum: send and pin a subject header message as before
+                # Attempt to create a topic even if detection failed (some runtimes hide is_forum)
                 try:
-                    subject_msg = await client.send_message(
-                        chat_id=channel_id,
-                        text=f"📌 **{subject}**",
-                        disable_web_page_preview=True
-                    )
-                    await client.pin_chat_message(chat_id=channel_id, message_id=subject_msg.id)
-                    last_subject = subject
-                    current_thread_id = None
-                    await asyncio.sleep(1)  # small pause to avoid hitting rate limits
-                except FloodWait as e:
-                    logger.warning(f"FloodWait while pinning: sleeping for {e.value}s")
-                    await asyncio.sleep(e.value)
-                except RPCError as e:
-                    logger.error(f"Failed to send/pin subject '{subject}': {e}")
+                    provisional_thread = await bot_api_create_forum_topic(channel_id, subject)
+                    if provisional_thread:
+                        logger.info(f"Created forum topic '{subject}' with thread_id={provisional_thread} (detection previously false)")
+                        subject_threads[subject] = provisional_thread
+                        chat_cache[subject_norm] = provisional_thread
+                        save_forum_cache(forum_cache)
+                        await mongo_set_thread_id(channel_id, subject_norm, provisional_thread)
+                        current_thread_id = provisional_thread
+                        last_subject = subject
+                        is_forum = True
+                        await asyncio.sleep(1)
+                    else:
+                        raise Exception("No thread id returned")
+                except Exception as e:
+                    # Non-forum: send a subject header message using Bot API
+                    try:
+                        await asyncio.sleep(0)  # yield
+                        await bot_api_send_message(channel_id, thread_id=0, text=f"📌 {subject}")
+                        last_subject = subject
+                        current_thread_id = None
+                        await asyncio.sleep(1)
+                    except Exception as e2:
+                        logger.error(f"Failed to send subject header via Bot API: {e2}")
 
         # Increment video count
         video_count += 1
