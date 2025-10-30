@@ -257,6 +257,20 @@ async def bot_api_send_document(chat_id: int, thread_id: int, file_path: str, ca
             if not data.get("ok"):
                 raise Exception(f"BotAPI sendDocument failed: {data}")
 
+async def bot_api_send_document_by_id(chat_id: int, thread_id: int, file_id: str, caption: str) -> None:
+    url = _bot_api_base() + "/sendDocument"
+    payload = {
+        "chat_id": chat_id,
+        "message_thread_id": thread_id,
+        "document": file_id,
+        "caption": caption,
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, timeout=300) as resp:
+            data = await resp.json(content_type=None)
+            if not data.get("ok"):
+                raise Exception(f"BotAPI sendDocument (by id) failed: {data}")
+
 async def bot_api_send_video(chat_id: int, thread_id: int, file_path: str, caption: str, duration: Optional[int] = None, thumb_path: Optional[str] = None) -> None:
     url = _bot_api_base() + "/sendVideo"
     form = aiohttp.FormData()
@@ -273,6 +287,22 @@ async def bot_api_send_video(chat_id: int, thread_id: int, file_path: str, capti
             data = await resp.json(content_type=None)
             if not data.get("ok"):
                 raise Exception(f"BotAPI sendVideo failed: {data}")
+
+async def bot_api_send_video_by_id(chat_id: int, thread_id: int, file_id: str, caption: str, duration: Optional[int] = None) -> None:
+    url = _bot_api_base() + "/sendVideo"
+    payload = {
+        "chat_id": chat_id,
+        "message_thread_id": thread_id,
+        "video": file_id,
+        "caption": caption,
+    }
+    if duration is not None:
+        payload["duration"] = int(duration)
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, timeout=300) as resp:
+            data = await resp.json(content_type=None)
+            if not data.get("ok"):
+                raise Exception(f"BotAPI sendVideo (by id) failed: {data}")
 
 async def bot_api_get_chat(chat_id: int) -> dict:
     url = _bot_api_base() + "/getChat"
@@ -292,6 +322,15 @@ async def bot_api_pin_message(chat_id: int, message_id: int) -> None:
             data = await resp.json(content_type=None)
             if not data.get("ok"):
                 raise Exception(f"BotAPI pinChatMessage failed: {data}")
+
+async def bot_api_delete_message(chat_id: int, message_id: int) -> None:
+    url = _bot_api_base() + "/deleteMessage"
+    payload = {"chat_id": chat_id, "message_id": message_id}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, timeout=30) as resp:
+            data = await resp.json(content_type=None)
+            if not data.get("ok"):
+                raise Exception(f"BotAPI deleteMessage failed: {data}")
 
 # --- NEW: http download helper (async) ---
 async def _download_http_to_file(session: aiohttp.ClientSession, url: str, tmp_path: str) -> None:
@@ -425,7 +464,30 @@ async def upload_file_to_channel(
                 try:
                     # If we have a thread id, use Bot API to ensure routing into topic
                     if message_thread_id is not None:
-                        await bot_api_send_video(channel_id, message_thread_id, file_path, caption, duration=duration, thumb_path=thumb)
+                        try:
+                            await bot_api_send_video(channel_id, message_thread_id, file_path, caption, duration=duration, thumb_path=thumb)
+                        except Exception as be:
+                            if "413" in str(be) or "Request Entity Too Large" in str(be):
+                                # Hybrid fallback: upload once to get file_id, then delete and resend by id into topic
+                                tmp_msg = await bot.send_video(
+                                    chat_id=channel_id,
+                                    video=file_path,
+                                    caption=caption,
+                                    supports_streaming=True
+                                )
+                                file_id = getattr(getattr(tmp_msg, "video", None), "file_id", None)
+                                if file_id:
+                                    try:
+                                        await bot_api_send_video_by_id(channel_id, message_thread_id, file_id, caption, duration=duration)
+                                    finally:
+                                        try:
+                                            await bot.delete_messages(channel_id, tmp_msg.id)
+                                        except Exception:
+                                            pass
+                                else:
+                                    raise
+                            else:
+                                raise
                     else:
                         await bot.send_video(
                             chat_id=channel_id,
@@ -442,7 +504,29 @@ async def upload_file_to_channel(
             else:
                 # For non‐video files, send as document
                 if message_thread_id is not None:
-                    await bot_api_send_document(channel_id, message_thread_id, file_path, caption)
+                    try:
+                        await bot_api_send_document(channel_id, message_thread_id, file_path, caption)
+                    except Exception as be:
+                        if "413" in str(be) or "Request Entity Too Large" in str(be):
+                            # Hybrid fallback for documents
+                            tmp_msg = await bot.send_document(
+                                chat_id=channel_id,
+                                document=file_path,
+                                caption=caption
+                            )
+                            file_id = getattr(getattr(tmp_msg, "document", None), "file_id", None)
+                            if file_id:
+                                try:
+                                    await bot_api_send_document_by_id(channel_id, message_thread_id, file_id, caption)
+                                finally:
+                                    try:
+                                        await bot.delete_messages(channel_id, tmp_msg.id)
+                                    except Exception:
+                                        pass
+                            else:
+                                raise
+                        else:
+                            raise
                 else:
                     await bot.send_document(
                         chat_id=channel_id,
@@ -695,21 +779,32 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     is_forum = False
                     current_thread_id = None
             else:
-                # Attempt to create a topic even if detection failed (some runtimes hide is_forum)
+                # Attempt to reuse an existing topic via DB/cache, else create via Bot API
                 try:
-                    provisional_thread = await bot_api_create_forum_topic(channel_id, subject)
-                    if provisional_thread:
-                        logger.info(f"Created forum topic '{subject}' with thread_id={provisional_thread} (detection previously false)")
-                        subject_threads[subject] = provisional_thread
-                        chat_cache[subject_norm] = provisional_thread
-                        save_forum_cache(forum_cache)
-                        await mongo_set_thread_id(channel_id, subject_norm, provisional_thread)
-                        current_thread_id = provisional_thread
+                    reuse_thread = await mongo_get_thread_id(channel_id, subject_norm)
+                    if not reuse_thread:
+                        reuse_thread = chat_cache.get(subject_norm)
+                    if isinstance(reuse_thread, int):
+                        current_thread_id = reuse_thread
+                        subject_threads[subject] = reuse_thread
                         last_subject = subject
                         is_forum = True
+                        logger.info(f"Reusing cached/DB forum topic '{subject}' with thread_id={reuse_thread} (detection previously false)")
                         await asyncio.sleep(1)
                     else:
-                        raise Exception("No thread id returned")
+                        provisional_thread = await bot_api_create_forum_topic(channel_id, subject)
+                        if provisional_thread:
+                            logger.info(f"Created forum topic '{subject}' with thread_id={provisional_thread} (detection previously false)")
+                            subject_threads[subject] = provisional_thread
+                            chat_cache[subject_norm] = provisional_thread
+                            save_forum_cache(forum_cache)
+                            await mongo_set_thread_id(channel_id, subject_norm, provisional_thread)
+                            current_thread_id = provisional_thread
+                            last_subject = subject
+                            is_forum = True
+                            await asyncio.sleep(1)
+                        else:
+                            raise Exception("No thread id returned")
                 except Exception as e:
                     # Non-forum: send a subject header message using Bot API
                     try:
