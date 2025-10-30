@@ -119,14 +119,14 @@ async def get_mongo_collection():
 
 async def mongo_get_thread_id(chat_id: int, subject_norm: str) -> Optional[int]:
     col = await get_mongo_collection()
-    if not col:
+    if col is None:
         return None
     doc = await col.find_one({"chat_id": chat_id, "subject_norm": subject_norm})
     return int(doc["thread_id"]) if doc and "thread_id" in doc else None
 
 async def mongo_set_thread_id(chat_id: int, subject_norm: str, thread_id: int) -> None:
     col = await get_mongo_collection()
-    if not col:
+    if col is None:
         return
     await col.update_one(
         {"chat_id": chat_id, "subject_norm": subject_norm},
