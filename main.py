@@ -47,6 +47,7 @@ API_ID = 27765349
 API_HASH = "9df1f705c8047ac0d723b29069a1332b"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGODB_URI = os.getenv("MONGODB_URI", "")
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@singhiskingway").strip()  # Optional: @publicgroupname
 
 # Only these user IDs can trigger /setchannel or upload
 ALLOWED_USER_IDS = [1116405290]
@@ -470,7 +471,7 @@ async def upload_file_to_channel(
                             if "413" in str(be) or "Request Entity Too Large" in str(be):
                                 # Hybrid fallback: upload once to get file_id, then delete and resend by id into topic
                                 tmp_msg = await bot.send_video(
-                                    chat_id=channel_id,
+                                    chat_id=pyro_target,
                                     video=file_path,
                                     caption=caption,
                                     supports_streaming=True
@@ -481,7 +482,7 @@ async def upload_file_to_channel(
                                         await bot_api_send_video_by_id(channel_id, message_thread_id, file_id, caption, duration=duration)
                                     finally:
                                         try:
-                                            await bot.delete_messages(channel_id, tmp_msg.id)
+                                            await bot.delete_messages(pyro_target, tmp_msg.id)
                                         except Exception:
                                             pass
                                 else:
@@ -510,7 +511,7 @@ async def upload_file_to_channel(
                         if "413" in str(be) or "Request Entity Too Large" in str(be):
                             # Hybrid fallback for documents
                             tmp_msg = await bot.send_document(
-                                chat_id=channel_id,
+                                chat_id=pyro_target,
                                 document=file_path,
                                 caption=caption
                             )
@@ -520,7 +521,7 @@ async def upload_file_to_channel(
                                     await bot_api_send_document_by_id(channel_id, message_thread_id, file_id, caption)
                                 finally:
                                     try:
-                                        await bot.delete_messages(channel_id, tmp_msg.id)
+                                        await bot.delete_messages(pyro_target, tmp_msg.id)
                                     except Exception:
                                         pass
                             else:
@@ -681,6 +682,16 @@ async def start_processing(client: Client, message: Message, user_id: int):
     channel_id = data["channel_id"]
     downloaded_by = data["downloaded_by"]
     total = data["total"]
+
+    # Optional: warm Pyrogram peer resolution using public username (helps hybrid fallback)
+    pyro_target = channel_id
+    if CHANNEL_USERNAME:
+        try:
+            await client.get_chat(CHANNEL_USERNAME)
+            pyro_target = CHANNEL_USERNAME
+            logger.info(f"Warmed Pyrogram peer for {CHANNEL_USERNAME} (will use for hybrid uploads)")
+        except Exception as e:
+            logger.warning(f"Could not warm Pyrogram peer for {CHANNEL_USERNAME}: {e}")
 
     # Detect if the target is a forum-enabled supergroup using Bot API
     try:
