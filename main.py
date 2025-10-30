@@ -347,27 +347,51 @@ async def upload_file_to_channel(
                 thumb = await extract_thumbnail_async(file_path)
                 duration = int(await duration_async(file_path))
                 try:
-                    await bot.send_video(
-                        chat_id=channel_id,
-                        video=file_path,
-                        caption=caption,
-                        message_thread_id=message_thread_id,
-                        thumb=thumb,
-                        duration=duration,
-                        supports_streaming=True
-                    )
+                    try:
+                        await bot.send_video(
+                            chat_id=channel_id,
+                            video=file_path,
+                            caption=caption,
+                            message_thread_id=message_thread_id,
+                            thumb=thumb,
+                            duration=duration,
+                            supports_streaming=True
+                        )
+                    except TypeError as te:
+                        # Older Pyrogram/Bot API may not support message_thread_id
+                        if "message_thread_id" in str(te):
+                            await bot.send_video(
+                                chat_id=channel_id,
+                                video=file_path,
+                                caption=caption,
+                                thumb=thumb,
+                                duration=duration,
+                                supports_streaming=True
+                            )
+                        else:
+                            raise
                     return True
                 finally:
                     if thumb and os.path.exists(thumb):
                         os.remove(thumb)
             else:
                 # For non‐video files, send as document
-                await bot.send_document(
-                    chat_id=channel_id,
-                    document=file_path,
-                    caption=caption,
-                    message_thread_id=message_thread_id
-                )
+                try:
+                    await bot.send_document(
+                        chat_id=channel_id,
+                        document=file_path,
+                        caption=caption,
+                        message_thread_id=message_thread_id
+                    )
+                except TypeError as te:
+                    if "message_thread_id" in str(te):
+                        await bot.send_document(
+                            chat_id=channel_id,
+                            document=file_path,
+                            caption=caption
+                        )
+                    else:
+                        raise
                 return True
 
         except FloodWait as e:
