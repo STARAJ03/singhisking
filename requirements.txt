@@ -1,4 +1,4 @@
-pyrogram>=2.3.61
+pyrogram>=2.0.106
 tgcrypto
 yt-dlp
 aiohttp
