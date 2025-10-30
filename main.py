@@ -448,7 +448,7 @@ async def upload_file_to_channel(
     channel_id: int,
     status_msg: Message,
     message_thread_id: Optional[int] = None,
-    pyro_target: Optional[typing.Union[int, str]] = None,
+    pyro_target: Optional[int | str] = None,
 ) -> bool:
     """
     Uploads either .mp4 (with thumbnail) or any other document to the channel.
