@@ -47,7 +47,7 @@ API_ID = 27765349
 API_HASH = "9df1f705c8047ac0d723b29069a1332b"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGODB_URI = os.getenv("MONGODB_URI", "")
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@singhiskingway").strip()  # Optional: @publicgroupname
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "").strip()  # Optional: @publicgroupname
 
 # Only these user IDs can trigger /setchannel or upload
 ALLOWED_USER_IDS = [1116405290]
@@ -447,7 +447,8 @@ async def upload_file_to_channel(
     caption: str,
     channel_id: int,
     status_msg: Message,
-    message_thread_id: Optional[int] = None
+    message_thread_id: Optional[int] = None,
+    pyro_target: Optional[typing.Union[int, str]] = None,
 ) -> bool:
     """
     Uploads either .mp4 (with thumbnail) or any other document to the channel.
@@ -470,8 +471,9 @@ async def upload_file_to_channel(
                         except Exception as be:
                             if "413" in str(be) or "Request Entity Too Large" in str(be):
                                 # Hybrid fallback: upload once to get file_id, then delete and resend by id into topic
+                                tmp_target = pyro_target or channel_id
                                 tmp_msg = await bot.send_video(
-                                    chat_id=pyro_target,
+                                    chat_id=tmp_target,
                                     video=file_path,
                                     caption=caption,
                                     supports_streaming=True
@@ -482,7 +484,7 @@ async def upload_file_to_channel(
                                         await bot_api_send_video_by_id(channel_id, message_thread_id, file_id, caption, duration=duration)
                                     finally:
                                         try:
-                                            await bot.delete_messages(pyro_target, tmp_msg.id)
+                                            await bot.delete_messages(tmp_target, tmp_msg.id)
                                         except Exception:
                                             pass
                                 else:
@@ -510,8 +512,9 @@ async def upload_file_to_channel(
                     except Exception as be:
                         if "413" in str(be) or "Request Entity Too Large" in str(be):
                             # Hybrid fallback for documents
+                            tmp_target = pyro_target or channel_id
                             tmp_msg = await bot.send_document(
-                                chat_id=pyro_target,
+                                chat_id=tmp_target,
                                 document=file_path,
                                 caption=caption
                             )
@@ -521,7 +524,7 @@ async def upload_file_to_channel(
                                     await bot_api_send_document_by_id(channel_id, message_thread_id, file_id, caption)
                                 finally:
                                     try:
-                                        await bot.delete_messages(pyro_target, tmp_msg.id)
+                                        await bot.delete_messages(tmp_target, tmp_msg.id)
                                     except Exception:
                                         pass
                             else:
@@ -917,7 +920,8 @@ async def start_processing(client: Client, message: Message, user_id: int):
                         caption,
                         channel_id,
                         item_status,
-                        message_thread_id=new_thread_id
+                        message_thread_id=new_thread_id,
+                        pyro_target=pyro_target
                     )
             except Exception as e:
                 logger.error(f"Retry after creating new topic failed: {e}")
