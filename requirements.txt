@@ -6,3 +6,5 @@ aiofiles
 flask
 waitress
 motor
+ffmpeg
+ffprobe
