@@ -38,15 +38,7 @@ COPY . /app
 #  Python dependencies
 # ──────────────────────────────────────────────
 RUN pip install --no-cache-dir -U pip setuptools wheel \
- && pip install --no-cache-dir \
-    pyrogram \
-    tgcrypto \
-    yt-dlp \
-    aiohttp \
-    aiofiles \
-    requests \
-    flask \
-    waitress
+ && pip install --no-cache-dir -r requirements.txt
 
 # ──────────────────────────────────────────────
 #  Runtime environment variables
