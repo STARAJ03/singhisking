@@ -1189,6 +1189,11 @@ async def start_processing(client: Client, message: Message, user_id: int):
                         save_forum_cache(forum_cache)
                         await mongo_set_thread_id(channel_id, subject_norm, thread_id)
                         logger.info(f"Created forum topic '{subject}' with thread_id={thread_id}")
+                        # Touch the thread with a subject header to confirm availability
+                        try:
+                            await bot_api_send_message(channel_id, thread_id=thread_id, text=f"{subject}")
+                        except Exception as e:
+                            logger.warning(f"Failed to send subject header in new thread {thread_id}: {e}")
                     else:
                         logger.info(f"Reusing forum topic '{subject}' with thread_id={thread_id}")
                     current_thread_id = thread_id
@@ -1218,6 +1223,10 @@ async def start_processing(client: Client, message: Message, user_id: int):
                         is_forum = True
                         logger.info(f"Reusing cached/DB forum topic '{subject}' with thread_id={reuse_thread} (detection previously false)")
                         await asyncio.sleep(1)
+                        try:
+                            await bot_api_send_message(channel_id, thread_id=reuse_thread, text=f"{subject}")
+                        except Exception as e:
+                            logger.warning(f"Failed to send subject header in new thread {reuse_thread}: {e}")
                     else:
                         provisional_thread = await bot_api_create_forum_topic(channel_id, subject)
                         if provisional_thread:
@@ -1229,6 +1238,11 @@ async def start_processing(client: Client, message: Message, user_id: int):
                             current_thread_id = provisional_thread
                             last_subject = subject
                             is_forum = True
+                            # Touch the thread with a subject header
+                            try:
+                                await bot_api_send_message(channel_id, thread_id=provisional_thread, text=f"{subject}")
+                            except Exception as e:
+                                logger.warning(f"Failed to send subject header in new thread {provisional_thread}: {e}")
                             await asyncio.sleep(1)
                         else:
                             raise Exception("No thread id returned")
