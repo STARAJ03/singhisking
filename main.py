@@ -25,7 +25,7 @@ import shutil
 import asyncio
 
 from pyrogram import Client, filters, idle
-from pyrogram.errors import FloodWait, RPCError, BadMsgNotification
+from pyrogram.errors import FloodWait, RPCError, BadMsgNotification, MessageNotModified
 from pyrogram.types import Message
 from typing import Dict, List, Optional
 
@@ -1008,7 +1008,10 @@ async def txt_handler(client: Client, message: Message):
         'total': len(lines),
         'step': 'start_number'
     }
-    await ack.edit_text(f"📋 Found {len(lines)} items. Please send the starting line number (1–{len(lines)}).")
+    try:
+        await ack.edit_text(f"📋 Found {len(lines)} items. Please send the starting line number (1–{len(lines)}).")
+    except MessageNotModified:
+        pass
 
 # ─── Handle subsequent text inputs (start_number → channel_id → batch_name → downloaded_by) ───────
 
