@@ -1083,14 +1083,19 @@ def sync_system_time():
 if __name__ == "__main__":
     logger.info("Starting bot...")
     try:
-        # Restore session from Mongo before starting the client, if possible
+        # Ensure an event loop exists and restore session before starting the client
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            asyncio.run(load_session_from_mongo())
+            loop.run_until_complete(load_session_from_mongo())
         except Exception as e:
             logger.warning(f"Session pre-load skipped: {e}")
         app.run()
     except BadMsgNotification:
         logger.warning("System time mismatch - continuing anyway")
+        # Ensure loop exists in this path as well
+        loop = asyncio.get_event_loop() if asyncio.get_event_loop_policy().get_event_loop() else asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         app.run()
     except Exception as e:
         logger.exception(f"Fatal error: {e}")
