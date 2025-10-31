@@ -755,6 +755,33 @@ async def upload_file_to_channel(
                             else:
                                 raise
                     else:
+                        # Guard: if we are in a forum context but do not have a thread id yet, do not try Pyrogram direct send to the private group
+                        if message_thread_id is None and LOG_CHANNEL_ID:
+                            # As a fallback, upload to log channel to obtain file_id and then send to topic once thread id is available
+                            tmp_target = LOG_CHANNEL_ID
+                            try:
+                                await bot.get_chat(LOG_CHANNEL_ID)
+                            except Exception:
+                                pass
+                            if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
+                                raise Cancelled("Cancelled before temp upload video (no thread)")
+                            tmp_msg = await bot.send_video(
+                                chat_id=tmp_target,
+                                video=file_path,
+                                caption=caption,
+                                thumb=thumb,
+                                duration=duration,
+                                supports_streaming=True
+                            )
+                            file_id = getattr(getattr(tmp_msg, "video", None), "file_id", None)
+                            if not file_id:
+                                raise Exception("Could not obtain file_id from temp upload")
+                            # Without thread id we cannot deliver to target yet; caller should retry the item after thread id is available
+                            try:
+                                await bot.delete_messages(tmp_target, tmp_msg.id)
+                            except Exception:
+                                pass
+                            raise Exception("Thread id not available yet for forum; skipping direct send")
                         if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                             raise Cancelled("Cancelled before direct send video")
                         await bot.send_video(
@@ -1386,6 +1413,19 @@ def sync_system_time():
 if __name__ == "__main__":
     logger.info("Starting bot...")
     try:
+        # Warm LOG_CHANNEL_ID peer on startup if provided
+        try:
+            if LOG_CHANNEL_ID:
+                async def _warm_log():
+                    try:
+                        await app.start()
+                        await app.get_chat(LOG_CHANNEL_ID)
+                    finally:
+                        await app.stop()
+                import asyncio as _a
+                _a.run(_warm_log())
+        except Exception as _e:
+            logger.warning(f"Log channel warm skipped: {_e}")
         app.run()
     except BadMsgNotification:
         logger.warning("System time mismatch - continuing anyway")
