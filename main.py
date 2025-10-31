@@ -57,6 +57,7 @@ try:
     LOG_CHANNEL_ID: Optional[int | str] = int(LOG_CHANNEL_ID_RAW) if LOG_CHANNEL_ID_RAW else None
 except ValueError:
     LOG_CHANNEL_ID = LOG_CHANNEL_ID_RAW if LOG_CHANNEL_ID_RAW else None
+INSTANCE_KEY = os.getenv("INSTANCE_KEY", "").strip()
 
 # Only these user IDs can trigger /setchannel or upload
 ALLOWED_USER_IDS = [1116405290]
@@ -227,12 +228,12 @@ async def _run_job_worker(client: Client):
                     # Fallback: create a dummy message object with minimal interface
                     dm = None
                 # Call existing processing using the prepared user_data
-                await start_processing(client, dm or Message(id=0), uid)
+                result_completed = await start_processing(client, dm or Message(id=0), uid)
             except Exception as e:
                 logger.exception(f"Job {job_id} failed: {e}")
                 await set_job_status(job_id, "failed")
             else:
-                await set_job_status(job_id, "completed")
+                await set_job_status(job_id, "completed" if result_completed else "stopped")
     finally:
         _job_worker_running = False
     
@@ -241,18 +242,23 @@ async def mongo_get_thread_id(chat_id: int, subject_norm: str) -> Optional[int]:
     col = await get_mongo_collection()
     if col is None:
         return None
-    doc = await col.find_one({"chat_id": chat_id, "subject_norm": subject_norm})
+    query = {"chat_id": chat_id, "subject_norm": subject_norm}
+    if INSTANCE_KEY:
+        query["instance"] = INSTANCE_KEY
+    doc = await col.find_one(query)
     return int(doc["thread_id"]) if doc and "thread_id" in doc else None
 
 async def mongo_set_thread_id(chat_id: int, subject_norm: str, thread_id: int) -> None:
     col = await get_mongo_collection()
     if col is None:
         return
-    await col.update_one(
-        {"chat_id": chat_id, "subject_norm": subject_norm},
-        {"$set": {"thread_id": int(thread_id), "updated_at": int(time.time())}},
-        upsert=True,
-    )
+    filt = {"chat_id": chat_id, "subject_norm": subject_norm}
+    if INSTANCE_KEY:
+        filt["instance"] = INSTANCE_KEY
+    update = {"$set": {"thread_id": int(thread_id), "updated_at": int(time.time())}}
+    if INSTANCE_KEY:
+        update["$set"]["instance"] = INSTANCE_KEY
+    await col.update_one(filt, update, upsert=True)
 
 @app.on_message(filters.command("ping") & filters.private)
 async def ping_handler(client: Client, message: Message):
@@ -845,6 +851,23 @@ async def cancel_handler(client: Client, message: Message):
     else:
         await message.reply_text("⚠️ Could not cancel (job not found or already started).")
 
+@app.on_message(filters.command("clear_queue") & filters.private)
+async def clear_queue_handler(client: Client, message: Message):
+    if message.from_user.id not in ALLOWED_USER_IDS:
+        return
+    args = message.text.strip().split(maxsplit=1)
+    scope = (args[1].strip().lower() if len(args) > 1 else "pending")
+    col = await get_jobs_collection()
+    if col is None:
+        await message.reply_text("⚠️ Mongo unavailable.")
+        return
+    if scope == "all":
+        res = await col.delete_many({})
+        await message.reply_text(f"🧹 Cleared ALL jobs: {res.deleted_count} deleted.")
+    else:
+        res = await col.delete_many({"status": "pending"})
+        await message.reply_text(f"🧹 Cleared pending jobs: {res.deleted_count} deleted.")
+
 # ─── Check for incoming .txt files ──────────────────────────────────────────────
 
 def is_txt_document(_, __, message: Message) -> bool:
@@ -954,6 +977,8 @@ async def input_handler(client: Client, message: Message):
 
 async def start_processing(client: Client, message: Message, user_id: int):
     data = user_data[user_id]
+    # Mark this user's processing as active
+    active_downloads[user_id] = True
     lines = data["lines"]
     start_idx = data["start_number"]
     batch_name = data["batch_name"]
@@ -1006,6 +1031,15 @@ async def start_processing(client: Client, message: Message, user_id: int):
     video_count = start_idx - 1  # Continue numbering
 
     for idx, entry in enumerate(lines[start_idx - 1:], start=start_idx):
+        # Check if a stop was requested
+        if not active_downloads.get(user_id, False):
+            try:
+                await message.reply_text("⏹️ Stopped by user.")
+            except Exception:
+                pass
+            # Ensure flag cleared and report early stop
+            active_downloads[user_id] = False
+            return False
         if not active_downloads.get(user_id, True):
             logger.info(f"Process stopped by user {user_id} at line {idx}")
             break
@@ -1258,13 +1292,9 @@ async def start_processing(client: Client, message: Message, user_id: int):
     # Cleanup
     user_data.pop(user_id, None)
     active_downloads.pop(user_id, None)
-
-    await status_msg.edit_text(
-        f"✅ Process completed!\n"
-        f"• Successfully uploaded: {processed}\n"
-        f"• Failed: {failed}\n"
-        f"• Total processed: {processed + failed}"
-    )
+    active_downloads[user_id] = False
+    await status_msg.edit_text("✅ All items processed.")
+    return True
 
 # ─── Handle potential bad‐time notifications on startup ────────────────────────
 
