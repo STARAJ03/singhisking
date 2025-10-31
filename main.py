@@ -24,7 +24,7 @@ import time
 import shutil
 import asyncio
 
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.errors import FloodWait, RPCError, BadMsgNotification
 from pyrogram.types import Message
 from typing import Dict, List, Optional
@@ -1084,21 +1084,29 @@ if __name__ == "__main__":
             loop.run_until_complete(load_session_from_mongo())
         except Exception as e:
             logger.warning(f"Session pre-load skipped: {e}")
-        # Start client explicitly to log identity
-        await_start_loop = asyncio.get_event_loop()
+        # Start client explicitly to log identity and idle
         async def _run_client():
             await app.start()
             me = await app.get_me()
             logger.info(f"Bot logged in as {getattr(me, 'username', None)} ({me.id})")
-            # Keep the client running
-            await app.idle()
-        await_start_loop.create_task(_run_client())
-        await_start_loop.run_forever()
+            try:
+                await idle()
+            finally:
+                await app.stop()
+        loop.run_until_complete(_run_client())
     except BadMsgNotification:
         logger.warning("System time mismatch - continuing anyway")
         # Ensure loop exists in this path as well
         loop = asyncio.get_event_loop() if asyncio.get_event_loop_policy().get_event_loop() else asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        app.run()
+        async def _run_client2():
+            await app.start()
+            me = await app.get_me()
+            logger.info(f"Bot logged in as {getattr(me, 'username', None)} ({me.id})")
+            try:
+                await idle()
+            finally:
+                await app.stop()
+        loop.run_until_complete(_run_client2())
     except Exception as e:
         logger.exception(f"Fatal error: {e}")
