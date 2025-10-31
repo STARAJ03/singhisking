@@ -80,6 +80,9 @@ user_data: Dict[int, dict] = {}
 _job_worker_running = False
 _job_worker_task = None
 
+class Cancelled(Exception):
+    pass
+
 # Persistent cache file for forum topics mapping: { chat_id: { subject_norm: thread_id } }
 FORUM_CACHE_PATH = "forum_threads.json"
 
@@ -669,40 +672,78 @@ async def upload_file_to_channel(
     status_msg: Message,
     message_thread_id: Optional[int] = None,
     pyro_target: Optional[int | str] = None,
+    cancel_user_id: Optional[int] = None,
 ) -> bool:
     """
     Uploads either .mp4 (with thumbnail) or any other document to the channel.
     Retries up to 3 times on RPCError/FloodWait.
     Ensures that thumbnails are cleaned up after use.
     """
-    max_retries = 3
+    # Total attempts per upload = max_retries; reattempts = max_retries - 1
+    max_retries = 1
 
     for attempt in range(max_retries):
         try:
+            if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
+                raise Cancelled("Cancelled before upload start")
             if file_path.lower().endswith(".mp4"):
                 # Extract thumbnail if possible
+                if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
+                    raise Cancelled("Cancelled before thumbnail")
                 thumb = await extract_thumbnail_async(file_path)
                 duration = int(await duration_async(file_path))
                 try:
                     # If we have a thread id, use Bot API to ensure routing into topic
                     if message_thread_id is not None:
                         try:
+                            if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
+                                raise Cancelled("Cancelled before bot API send video")
                             await bot_api_send_video(channel_id, message_thread_id, file_path, caption, duration=duration, thumb_path=thumb)
                         except Exception as be:
                             if "413" in str(be) or "Request Entity Too Large" in str(be):
                                 # Hybrid fallback: upload once to get file_id, then delete and resend by id into topic
                                 tmp_target = LOG_CHANNEL_ID or pyro_target or channel_id
-                                tmp_msg = await bot.send_video(
-                                    chat_id=tmp_target,
-                                    video=file_path,
-                                    caption=caption,
-                                    thumb=thumb,
-                                    duration=duration,
-                                    supports_streaming=True
-                                )
+                                # Ensure log channel peer is resolved before sending
+                                if LOG_CHANNEL_ID:
+                                    try:
+                                        await bot.get_chat(LOG_CHANNEL_ID)
+                                    except Exception:
+                                        pass
+                                if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
+                                    raise Cancelled("Cancelled before temp upload video")
+                                try:
+                                    tmp_msg = await bot.send_video(
+                                        chat_id=tmp_target,
+                                        video=file_path,
+                                        caption=caption,
+                                        thumb=thumb,
+                                        duration=duration,
+                                        supports_streaming=True
+                                    )
+                                except RPCError as e:
+                                    if LOG_CHANNEL_ID and "Peer id invalid" in str(e):
+                                        # Retry once after explicit resolve
+                                        try:
+                                            await bot.get_chat(LOG_CHANNEL_ID)
+                                            if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
+                                                raise Cancelled("Cancelled before temp upload video retry")
+                                            tmp_msg = await bot.send_video(
+                                                chat_id=tmp_target,
+                                                video=file_path,
+                                                caption=caption,
+                                                thumb=thumb,
+                                                duration=duration,
+                                                supports_streaming=True
+                                            )
+                                        except Exception as e2:
+                                            raise e2
+                                    else:
+                                        raise
                                 file_id = getattr(getattr(tmp_msg, "video", None), "file_id", None)
                                 if file_id:
                                     try:
+                                        if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
+                                            raise Cancelled("Cancelled before Bot API resend video by id")
                                         await bot_api_send_video_by_id(channel_id, message_thread_id, file_id, caption, duration=duration)
                                     finally:
                                         try:
@@ -714,6 +755,8 @@ async def upload_file_to_channel(
                             else:
                                 raise
                     else:
+                        if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
+                            raise Cancelled("Cancelled before direct send video")
                         await bot.send_video(
                             chat_id=channel_id,
                             video=file_path,
@@ -730,19 +773,48 @@ async def upload_file_to_channel(
                 # For non‐video files, send as document
                 if message_thread_id is not None:
                     try:
+                        if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
+                            raise Cancelled("Cancelled before bot API send document")
                         await bot_api_send_document(channel_id, message_thread_id, file_path, caption)
                     except Exception as be:
                         if "413" in str(be) or "Request Entity Too Large" in str(be):
                             # Hybrid fallback for documents
                             tmp_target = LOG_CHANNEL_ID or pyro_target or channel_id
-                            tmp_msg = await bot.send_document(
-                                chat_id=tmp_target,
-                                document=file_path,
-                                caption=caption
-                            )
+                            # Ensure log channel peer is resolved before sending
+                            if LOG_CHANNEL_ID:
+                                try:
+                                    await bot.get_chat(LOG_CHANNEL_ID)
+                                except Exception:
+                                    pass
+                            if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
+                                raise Cancelled("Cancelled before temp upload document")
+                            try:
+                                tmp_msg = await bot.send_document(
+                                    chat_id=tmp_target,
+                                    document=file_path,
+                                    caption=caption
+                                )
+                            except RPCError as e:
+                                if LOG_CHANNEL_ID and "Peer id invalid" in str(e):
+                                    # Retry once after explicit resolve
+                                    try:
+                                        await bot.get_chat(LOG_CHANNEL_ID)
+                                        if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
+                                            raise Cancelled("Cancelled before temp upload document retry")
+                                        tmp_msg = await bot.send_document(
+                                            chat_id=tmp_target,
+                                            document=file_path,
+                                            caption=caption
+                                        )
+                                    except Exception as e2:
+                                        raise e2
+                                else:
+                                    raise
                             file_id = getattr(getattr(tmp_msg, "document", None), "file_id", None)
                             if file_id:
                                 try:
+                                    if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
+                                        raise Cancelled("Cancelled before Bot API resend document by id")
                                     await bot_api_send_document_by_id(channel_id, message_thread_id, file_id, caption)
                                 finally:
                                     try:
@@ -754,6 +826,8 @@ async def upload_file_to_channel(
                         else:
                             raise
                 else:
+                    if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
+                        raise Cancelled("Cancelled before direct send document")
                     await bot.send_document(
                         chat_id=channel_id,
                         document=file_path,
@@ -773,6 +847,9 @@ async def upload_file_to_channel(
             await asyncio.sleep(2 ** attempt)
             continue
 
+        except Cancelled as e:
+            logger.info(str(e))
+            return False
         except Exception as e:
             logger.error(f"Unexpected upload error (attempt {attempt+1}): {e}")
             if attempt == max_retries - 1:
