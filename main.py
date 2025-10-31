@@ -1192,6 +1192,8 @@ async def start_processing(client: Client, message: Message, user_id: int):
                         save_forum_cache(forum_cache)
                         await mongo_set_thread_id(channel_id, subject_norm, thread_id)
                         logger.info(f"Created forum topic '{subject}' with thread_id={thread_id}")
+                        # Small delay to allow thread to become available
+                        await asyncio.sleep(2)
                         # Touch the thread with a subject header to confirm availability (retry to avoid race)
                         for _r in range(3):
                             try:
@@ -1246,6 +1248,8 @@ async def start_processing(client: Client, message: Message, user_id: int):
                             current_thread_id = provisional_thread
                             last_subject = subject
                             is_forum = True
+                            # Small delay to allow thread to become available
+                            await asyncio.sleep(2)
                             # Touch the thread with a subject header (retry to avoid race)
                             for _r in range(3):
                                 try:
