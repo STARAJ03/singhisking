@@ -931,8 +931,10 @@ async def input_handler(client: Client, message: Message):
                 downloaded_by=data['downloaded_by'],
             )
             if job_id:
-                await message.reply_text(f"🗂️ Queued your upload job.
-ID: `{job_id}`\nChannel: `{data['channel_id']}`\nItems: {len(data['lines'])}")
+                await message.reply_text(
+                    f"🗂️ Queued your upload job.\n"
+                    f"ID: `{job_id}`\nChannel: `{data['channel_id']}`\nItems: {len(data['lines'])}"
+                )
             else:
                 await message.reply_text("⚠️ Could not queue job (Mongo unavailable).")
         except Exception as e:
