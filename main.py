@@ -50,6 +50,11 @@ API_HASH = "9df1f705c8047ac0d723b29069a1332b"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGODB_URI = os.getenv("MONGODB_URI", "")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "").strip()  # Optional: @publicgroupname
+LOG_CHANNEL_ID_RAW = os.getenv("LOG_CHANNEL_ID", "").strip()  # Optional: -100... or @channelusername
+try:
+    LOG_CHANNEL_ID: Optional[int | str] = int(LOG_CHANNEL_ID_RAW) if LOG_CHANNEL_ID_RAW else None
+except ValueError:
+    LOG_CHANNEL_ID = LOG_CHANNEL_ID_RAW if LOG_CHANNEL_ID_RAW else None
 
 # Only these user IDs can trigger /setchannel or upload
 ALLOWED_USER_IDS = [1116405290]
@@ -566,7 +571,7 @@ async def upload_file_to_channel(
                         except Exception as be:
                             if "413" in str(be) or "Request Entity Too Large" in str(be):
                                 # Hybrid fallback: upload once to get file_id, then delete and resend by id into topic
-                                tmp_target = pyro_target or channel_id
+                                tmp_target = LOG_CHANNEL_ID or pyro_target or channel_id
                                 tmp_msg = await bot.send_video(
                                     chat_id=tmp_target,
                                     video=file_path,
@@ -609,7 +614,7 @@ async def upload_file_to_channel(
                     except Exception as be:
                         if "413" in str(be) or "Request Entity Too Large" in str(be):
                             # Hybrid fallback for documents
-                            tmp_target = pyro_target or channel_id
+                            tmp_target = LOG_CHANNEL_ID or pyro_target or channel_id
                             tmp_msg = await bot.send_document(
                                 chat_id=tmp_target,
                                 document=file_path,
