@@ -959,6 +959,24 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     failed += 1
 
         if not download_success:
+            # Fallback: send the styled caption with the original link into the topic/chat
+            try:
+                fallback_caption = build_caption(
+                    subject=subject,
+                    index=idx,
+                    title=title_part,
+                    batch_name=batch_name,
+                    downloaded_by=downloaded_by,
+                    link=url_stripped,
+                )
+                if is_forum and current_thread_id is not None:
+                    await bot_api_send_message(channel_id, thread_id=current_thread_id, text=fallback_caption)
+                else:
+                    await bot_api_send_message(channel_id, thread_id=0, text=fallback_caption)
+            except Exception as e:
+                logger.error(f"Failed to send fallback link message for line {idx}: {e}")
+            # Move to next item
+            continue
             # If it's a YouTube or streaming link, send the URL instead
             if any(x in url.lower() for x in ["youtube.com", "youtu.be", "vimeo.com", "facebook.com", "dailymotion.com"]):
                 try:
