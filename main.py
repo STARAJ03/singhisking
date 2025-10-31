@@ -399,6 +399,8 @@ async def bot_api_send_video_by_id(chat_id: int, thread_id: int, file_id: str, c
     }
     if duration is not None:
         payload["duration"] = int(duration)
+    # Ensure Telegram treats it as streamable in the UI
+    payload["supports_streaming"] = True
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, timeout=300) as resp:
             data = await resp.json(content_type=None)
@@ -962,11 +964,11 @@ async def start_processing(client: Client, message: Message, user_id: int):
             # Fallback: send the styled caption with the original link into the topic/chat
             try:
                 fallback_caption = build_caption(
-                    subject=subject,
-                    index=idx,
-                    title=title_part,
-                    batch_name=batch_name,
-                    downloaded_by=downloaded_by,
+                    subject,
+                    idx,
+                    title_part,
+                    batch_name,
+                    downloaded_by,
                     link=url_stripped,
                 )
                 if is_forum and current_thread_id is not None:
