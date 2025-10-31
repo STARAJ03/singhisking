@@ -137,6 +137,10 @@ async def mongo_set_thread_id(chat_id: int, subject_norm: str, thread_id: int) -
         upsert=True,
     )
 
+@app.on_message(filters.command("ping") & filters.private)
+async def ping_handler(client: Client, message: Message):
+    await message.reply_text("pong")
+
 async def get_state_collection():
     """Return a collection for storing small bot state blobs (e.g., session backup)."""
     try:
@@ -1080,7 +1084,16 @@ if __name__ == "__main__":
             loop.run_until_complete(load_session_from_mongo())
         except Exception as e:
             logger.warning(f"Session pre-load skipped: {e}")
-        app.run()
+        # Start client explicitly to log identity
+        await_start_loop = asyncio.get_event_loop()
+        async def _run_client():
+            await app.start()
+            me = await app.get_me()
+            logger.info(f"Bot logged in as {getattr(me, 'username', None)} ({me.id})")
+            # Keep the client running
+            await app.idle()
+        await_start_loop.create_task(_run_client())
+        await_start_loop.run_forever()
     except BadMsgNotification:
         logger.warning("System time mismatch - continuing anyway")
         # Ensure loop exists in this path as well
