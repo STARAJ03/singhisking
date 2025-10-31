@@ -141,6 +141,12 @@ async def mongo_set_thread_id(chat_id: int, subject_norm: str, thread_id: int) -
 async def ping_handler(client: Client, message: Message):
     await message.reply_text("pong")
 
+@app.on_message(filters.command("whoami") & filters.private)
+async def whoami_handler(client: Client, message: Message):
+    me = await client.get_me()
+    logger.info(f"Bot logged in as {getattr(me, 'username', None)} ({me.id})")
+    await message.reply_text(f"@{getattr(me, 'username', 'unknown')} ({me.id})")
+
 async def get_state_collection():
     """Return a collection for storing small bot state blobs (e.g., session backup)."""
     try:
@@ -1077,36 +1083,14 @@ def sync_system_time():
 if __name__ == "__main__":
     logger.info("Starting bot...")
     try:
-        # Initialize event loop explicitly and restore session before starting the client
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        # Restore session from Mongo before starting the client, if possible
         try:
-            loop.run_until_complete(load_session_from_mongo())
+            asyncio.run(load_session_from_mongo())
         except Exception as e:
             logger.warning(f"Session pre-load skipped: {e}")
-        # Start client explicitly to log identity and idle
-        async def _run_client():
-            await app.start()
-            me = await app.get_me()
-            logger.info(f"Bot logged in as {getattr(me, 'username', None)} ({me.id})")
-            try:
-                await idle()
-            finally:
-                await app.stop()
-        loop.run_until_complete(_run_client())
+        app.run()
     except BadMsgNotification:
         logger.warning("System time mismatch - continuing anyway")
-        # Ensure loop exists in this path as well
-        loop = asyncio.get_event_loop() if asyncio.get_event_loop_policy().get_event_loop() else asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        async def _run_client2():
-            await app.start()
-            me = await app.get_me()
-            logger.info(f"Bot logged in as {getattr(me, 'username', None)} ({me.id})")
-            try:
-                await idle()
-            finally:
-                await app.stop()
-        loop.run_until_complete(_run_client2())
+        app.run()
     except Exception as e:
         logger.exception(f"Fatal error: {e}")
