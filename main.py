@@ -280,6 +280,8 @@ async def bot_api_send_video(chat_id: int, thread_id: int, file_path: str, capti
     form.add_field("caption", caption)
     if duration is not None:
         form.add_field("duration", str(int(duration)))
+    # Hint player for progressive playback
+    form.add_field("supports_streaming", "true")
     form.add_field("video", open(file_path, "rb"), filename=os.path.basename(file_path))
     if thumb_path and os.path.exists(thumb_path):
         form.add_field("thumbnail", open(thumb_path, "rb"), filename=os.path.basename(thumb_path))
@@ -476,6 +478,8 @@ async def upload_file_to_channel(
                                     chat_id=tmp_target,
                                     video=file_path,
                                     caption=caption,
+                                    thumb=thumb,
+                                    duration=duration,
                                     supports_streaming=True
                                 )
                                 file_id = getattr(getattr(tmp_msg, "video", None), "file_id", None)
