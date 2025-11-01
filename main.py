@@ -390,6 +390,16 @@ async def _run_job_worker(client: Client):
                 except Exception:
                     # Fallback: create a dummy message object with minimal interface
                     dm = None
+                # Ensure user_data exists (guard against accidental clears)
+                if uid not in user_data:
+                    user_data[uid] = {
+                        "lines": lines,
+                        "start_number": start_idx,
+                        "batch_name": batch_name,
+                        "channel_id": channel_id,
+                        "downloaded_by": downloaded_by,
+                        "total": len(lines),
+                    }
                 # Call existing processing using the prepared user_data
                 result_completed = await start_processing(client, dm or Message(id=0), uid)
             except Exception as e:
