@@ -114,6 +114,24 @@ async def get_mongo_collection():
     global _mongo_client, _mongo_col
     if not MONGODB_URI:
         return None
+    try:
+        if _mongo_col is not None:
+            return _mongo_col
+        _mongo_client = AsyncIOMotorClient(MONGODB_URI, serverSelectionTimeoutMS=3000)
+        # Use default DB if provided in URI; else fallback to 'app'
+        try:
+            db = _mongo_client.get_default_database()  # may raise if none
+        except Exception:
+            db = _mongo_client["app"]
+        _mongo_col = db["forum_threads"]
+        # Force a quick ping to validate connection
+        await _mongo_client.admin.command("ping")
+        logger.info("MongoDB connected for forum thread mapping")
+        return _mongo_col
+    except Exception as e:
+        logger.warning(f"MongoDB unavailable, falling back to local cache: {e}")
+        _mongo_col = None
+        return None
 
 async def is_video_file_async(filename: str) -> bool:
     try:
