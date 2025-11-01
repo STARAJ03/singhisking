@@ -167,6 +167,7 @@ async def transcode_to_streamable_mp4_async(filename: str) -> Optional[str]:
         proc = await asyncio.create_subprocess_exec(
             'ffmpeg', '-y', '-i', filename,
             '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+            '-profile:v', 'baseline', '-level', '3.1', '-pix_fmt', 'yuv420p',
             '-c:a', 'aac', '-b:a', '128k',
             '-movflags', '+faststart',
             out_path,
@@ -852,9 +853,13 @@ async def upload_file_to_channel(
                 # Extract thumbnail if possible
                 if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                     raise Cancelled("Cancelled before thumbnail")
-                # Ensure streamable codecs/container
+                # Ensure streamable codecs/container and log detected codecs
                 try:
+                    vcodec_before, acodec_before = await get_codecs_async(file_path)
+                    logger.info(f"Upload codecs before ensure: v={vcodec_before} a={acodec_before} path={file_path}")
                     file_path = await ensure_streamable_async(file_path)
+                    vcodec_after, acodec_after = await get_codecs_async(file_path)
+                    logger.info(f"Upload codecs after ensure:  v={vcodec_after} a={acodec_after} path={file_path}")
                 except Exception:
                     pass
                 thumb = await extract_thumbnail_async(file_path)
