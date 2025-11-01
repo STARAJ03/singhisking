@@ -306,6 +306,12 @@ async def enqueue_job(user_id: int, channel_id: int, lines: List[str], start_num
         "updated_at": int(time.time()),
     }
     res = await col.insert_one(doc)
+    # Ensure the background worker is running
+    try:
+        if not globals().get("_job_worker_running", False):
+            asyncio.create_task(_run_job_worker(app))
+    except Exception:
+        pass
     return str(res.inserted_id)
 
 async def fetch_next_pending_job() -> Optional[dict]:
@@ -880,17 +886,6 @@ async def upload_file_to_channel(
                         # Non-playable codec: do NOT transcode and do NOT switch to document.
                         # Instead, embed the original link into the title line and proceed with sendVideo.
                         caption = _embed_link_in_title(caption, original_url)
-                    else:
-                        # If H.264 but not baseline profile, transcode to baseline for wider client compatibility
-                        profile = await get_h264_profile_async(file_path)
-                        if profile and profile.lower() not in ("baseline",):
-                            new_path = await transcode_to_streamable_mp4_async(file_path)
-                            if new_path:
-                                file_path = new_path
-                            try:
-                                await remux_faststart_async(file_path)
-                            except Exception:
-                                pass
                 except Exception:
                     pass
                 # Extract thumbnail if possible
