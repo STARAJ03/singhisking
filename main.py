@@ -755,6 +755,13 @@ async def upload_file_to_channel(
                 # Extract thumbnail if possible
                 if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                     raise Cancelled("Cancelled before thumbnail")
+                # Ensure moov atom at start for progressive playback
+                try:
+                    remuxed = await remux_faststart_async(file_path)
+                    if not remuxed:
+                        logger.info("faststart remux skipped or not needed")
+                except Exception as _e:
+                    logger.warning(f"faststart remux failed (continuing): {_e}")
                 thumb = await extract_thumbnail_async(file_path)
                 duration = int(await duration_async(file_path))
                 try:
