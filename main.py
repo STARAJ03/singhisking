@@ -846,6 +846,19 @@ async def upload_file_to_channel(
             if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                 raise Cancelled("Cancelled before upload start")
             if file_path.lower().endswith(".mp4"):
+                # If codec isn't H.264/AVC, transcode to streamable MP4 for instant play
+                try:
+                    vcodec, acodec = await get_codecs_async(file_path)
+                    if vcodec.lower() not in ("h264", "avc1"):
+                        new_path = await transcode_to_streamable_mp4_async(file_path)
+                        if new_path:
+                            file_path = new_path
+                        try:
+                            await remux_faststart_async(file_path)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
                 # Extract thumbnail if possible
                 if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                     raise Cancelled("Cancelled before thumbnail")
