@@ -114,6 +114,85 @@ async def get_mongo_collection():
     global _mongo_client, _mongo_col
     if not MONGODB_URI:
         return None
+
+async def is_video_file_async(filename: str) -> bool:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            'ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', filename,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await proc.communicate()
+        return proc.returncode == 0 and stdout.decode().strip() != ""
+    except Exception:
+        return False
+
+async def get_codecs_async(filename: str) -> tuple[str, str]:
+    v, a = "", ""
+    try:
+        pv = await asyncio.create_subprocess_exec('ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', filename, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        sv, _ = await pv.communicate()
+        if pv.returncode == 0:
+            v = sv.decode().strip()
+    except Exception:
+        pass
+    try:
+        pa = await asyncio.create_subprocess_exec('ffprobe', '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', filename, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        sa, _ = await pa.communicate()
+        if pa.returncode == 0:
+            a = sa.decode().strip()
+    except Exception:
+        pass
+    return v, a
+
+async def transcode_to_streamable_mp4_async(filename: str) -> Optional[str]:
+    try:
+        out_path = filename + ".streamable.mp4"
+        proc = await asyncio.create_subprocess_exec(
+            'ffmpeg', '-y', '-i', filename,
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+            '-c:a', 'aac', '-b:a', '128k',
+            '-movflags', '+faststart',
+            out_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await proc.communicate()
+        if proc.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            try:
+                os.remove(filename)
+            except Exception:
+                pass
+            shutil.move(out_path, filename if filename.lower().endswith('.mp4') else (os.path.splitext(filename)[0] + '.mp4'))
+            # If original wasn't .mp4, update path
+            return (filename if filename.lower().endswith('.mp4') else (os.path.splitext(filename)[0] + '.mp4'))
+        else:
+            try:
+                if os.path.exists(out_path):
+                    os.remove(out_path)
+            except Exception:
+                pass
+            return None
+    except Exception:
+        return None
+
+async def ensure_streamable_async(filename: str) -> str:
+    """Ensure the file is Telegram-streamable. Returns possibly new path."""
+    # If not a video, return
+    if not await is_video_file_async(filename):
+        return filename
+    v, a = await get_codecs_async(filename)
+    # If already H.264/AAC in mp4, just make sure faststart is set
+    if v.lower() in ("h264", "avc1") and (a.lower() in ("aac", "mp4a") or a == ""):
+        if filename.lower().endswith('.mp4'):
+            await remux_faststart_async(filename)
+            return filename
+    # Otherwise, transcode to mp4 H.264/AAC
+    new_path = await transcode_to_streamable_mp4_async(filename)
+    if new_path:
+        await remux_faststart_async(new_path)
+        return new_path
+    # Fallback: try faststart anyway
+    if filename.lower().endswith('.mp4'):
+        await remux_faststart_async(filename)
+    return filename
     try:
         if _mongo_col is not None:
             return _mongo_col
@@ -751,17 +830,15 @@ async def upload_file_to_channel(
         try:
             if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                 raise Cancelled("Cancelled before upload start")
-            if file_path.lower().endswith(".mp4"):
+            if await is_video_file_async(file_path):
                 # Extract thumbnail if possible
                 if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                     raise Cancelled("Cancelled before thumbnail")
-                # Ensure moov atom at start for progressive playback
+                # Ensure streamable codecs/container
                 try:
-                    remuxed = await remux_faststart_async(file_path)
-                    if not remuxed:
-                        logger.info("faststart remux skipped or not needed")
-                except Exception as _e:
-                    logger.warning(f"faststart remux failed (continuing): {_e}")
+                    file_path = await ensure_streamable_async(file_path)
+                except Exception:
+                    pass
                 thumb = await extract_thumbnail_async(file_path)
                 duration = int(await duration_async(file_path))
                 try:
