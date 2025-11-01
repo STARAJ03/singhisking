@@ -584,6 +584,20 @@ def build_caption(subject: str, index_number: int, title: str, batch: str, downl
         lines.insert(5, f"▸ 𝙇𝙞𝙣𝙠   -  {link.strip()}")
     return "\n".join(lines)
 
+def _embed_link_in_title(caption: str, url: Optional[str]) -> str:
+    if not url:
+        return caption
+    try:
+        lines = caption.splitlines()
+        for i, line in enumerate(lines):
+            if line.strip().startswith("▸ 𝙏𝙞𝙩𝙡𝙚"):
+                lines[i] = f"{line} (🔗 {url})"
+                return "\n".join(lines)
+        # Fallback: append link at the end
+        return caption + f"\n🔗 {url}"
+    except Exception:
+        return caption
+
 def select_pdf_filename(title_with_subject: str) -> str:
     """
     From a title like "[SUBJECT]Batch | Core Title | Teacher", extract the middle pipe segment as the filename.
@@ -844,6 +858,7 @@ async def upload_file_to_channel(
     message_thread_id: Optional[int] = None,
     pyro_target: Optional[int | str] = None,
     cancel_user_id: Optional[int] = None,
+    original_url: Optional[str] = None,
 ) -> bool:
     """
     Uploads either .mp4 (with thumbnail) or any other document to the channel.
@@ -858,17 +873,13 @@ async def upload_file_to_channel(
             if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                 raise Cancelled("Cancelled before upload start")
             if file_path.lower().endswith(".mp4"):
-                # If codec isn't H.264/AVC, transcode to streamable MP4 for instant play
+                # If codec isn't H.264/AVC, keep uploading as video but augment caption with original URL
                 try:
                     vcodec, acodec = await get_codecs_async(file_path)
                     if vcodec.lower() not in ("h264", "avc1"):
-                        new_path = await transcode_to_streamable_mp4_async(file_path)
-                        if new_path:
-                            file_path = new_path
-                        try:
-                            await remux_faststart_async(file_path)
-                        except Exception:
-                            pass
+                        # Non-playable codec: do NOT transcode and do NOT switch to document.
+                        # Instead, embed the original link into the title line and proceed with sendVideo.
+                        caption = _embed_link_in_title(caption, original_url)
                     else:
                         # If H.264 but not baseline profile, transcode to baseline for wider client compatibility
                         profile = await get_h264_profile_async(file_path)
@@ -1583,7 +1594,10 @@ async def start_processing(client: Client, message: Message, user_id: int):
                 caption,
                 channel_id,
                 item_status,
-                message_thread_id=current_thread_id if is_forum else None
+                message_thread_id=current_thread_id if is_forum else None,
+                pyro_target=pyro_target,
+                cancel_user_id=user_id,
+                original_url=url_stripped,
             )
             if is_forum:
                 logger.info(f"Uploaded to thread_id={current_thread_id} for subject='{subject}'")
@@ -1610,7 +1624,9 @@ async def start_processing(client: Client, message: Message, user_id: int):
                         channel_id,
                         item_status,
                         message_thread_id=new_thread_id,
-                        pyro_target=pyro_target
+                        pyro_target=pyro_target,
+                        cancel_user_id=user_id,
+                        original_url=url_stripped,
                     )
             except Exception as e:
                 logger.error(f"Retry after creating new topic failed: {e}")
