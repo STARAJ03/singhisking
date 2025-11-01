@@ -849,19 +849,10 @@ async def upload_file_to_channel(
         try:
             if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                 raise Cancelled("Cancelled before upload start")
-            if await is_video_file_async(file_path):
+            if file_path.lower().endswith(".mp4"):
                 # Extract thumbnail if possible
                 if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                     raise Cancelled("Cancelled before thumbnail")
-                # Ensure streamable codecs/container and log detected codecs
-                try:
-                    vcodec_before, acodec_before = await get_codecs_async(file_path)
-                    logger.info(f"Upload codecs before ensure: v={vcodec_before} a={acodec_before} path={file_path}")
-                    file_path = await ensure_streamable_async(file_path)
-                    vcodec_after, acodec_after = await get_codecs_async(file_path)
-                    logger.info(f"Upload codecs after ensure:  v={vcodec_after} a={acodec_after} path={file_path}")
-                except Exception:
-                    pass
                 thumb = await extract_thumbnail_async(file_path)
                 duration = int(await duration_async(file_path))
                 try:
