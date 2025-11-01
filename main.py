@@ -603,7 +603,7 @@ async def bot_api_create_forum_topic(chat_id: int, title: str) -> Optional[int]:
                 raise Exception(f"BotAPI createForumTopic failed: {data}")
             return data.get("result", {}).get("message_thread_id")
 
-async def bot_api_send_message(chat_id: int, thread_id: int, text: str) -> None:
+async def bot_api_send_message(chat_id: int, thread_id: int, text: str) -> int:
     url = _bot_api_base() + "/sendMessage"
     payload = {"chat_id": chat_id, "message_thread_id": thread_id, "text": text, "disable_web_page_preview": False}
     async with aiohttp.ClientSession() as session:
@@ -611,6 +611,7 @@ async def bot_api_send_message(chat_id: int, thread_id: int, text: str) -> None:
             data = await resp.json(content_type=None)
             if not data.get("ok"):
                 raise Exception(f"BotAPI sendMessage failed: {data}")
+            return data.get("result", {}).get("message_id")
 
 async def bot_api_send_document(chat_id: int, thread_id: int, file_path: str, caption: str) -> None:
     url = _bot_api_base() + "/sendDocument"
@@ -729,19 +730,10 @@ def _ydl_download_blocking(url: str, out_template: str) -> str:
     """
     opts = {
         "outtmpl": out_template,
-        # Prefer H.264 (avc1) video + m4a audio, fall back to mp4, then best
-        "format": "bv*[vcodec~=avc1|h264][ext=mp4]+ba[ext=m4a]/bv*[vcodec~=avc1|h264]+ba/b[ext=mp4]/b/best",
+        "format": "best[ext=mp4]/best",
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-        # Ensure final output is MP4 for Telegram streaming compatibility
-        "merge_output_format": "mp4",
-        "recode_video": "mp4",
-        "postprocessors": [
-            {"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}
-        ],
-        # Move moov atom to the start for progressive playback
-        "postprocessor_args": ["-movflags", "+faststart"],
     }
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -810,14 +802,8 @@ async def download_file(url: str, filename: str) -> str:
         loop = asyncio.get_event_loop()
         try:
             out_path = await loop.run_in_executor(_thread_pool, _ydl_download_blocking, url, sanitized_template)
-            # Prefer MP4 if post-processing created a different final file
-            base_no_ext, _ = os.path.splitext(out_path)
-            mp4_candidate = base_no_ext + ".mp4"
-            final_path = out_path
-            if os.path.exists(mp4_candidate):
-                final_path = mp4_candidate
-            if os.path.exists(final_path):
-                return final_path
+            if os.path.exists(out_path):
+                return out_path
             else:
                 raise Exception("yt-dlp reported file but it does not exist")
         except Exception as e:
@@ -1359,9 +1345,10 @@ async def start_processing(client: Client, message: Message, user_id: int):
                         await asyncio.sleep(2)
                         # Touch the thread with a subject header to confirm availability (retry to avoid race)
                         header_sent = False
+                        header_msg_id = None
                         for _r in range(5):
                             try:
-                                await bot_api_send_message(channel_id, thread_id=thread_id, text=f"{subject}")
+                                header_msg_id = await bot_api_send_message(channel_id, thread_id=thread_id, text=f"{subject}")
                                 header_sent = True
                                 break
                             except Exception as e:
@@ -1377,6 +1364,13 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     try:
                         if not locals().get('header_sent', True):
                             await asyncio.sleep(2)
+                    except Exception:
+                        pass
+                    # Delete the header message shortly after to keep the topic clean
+                    try:
+                        if 'header_msg_id' in locals() and header_msg_id:
+                            await asyncio.sleep(0.5)
+                            await bot_api_delete_message(channel_id, header_msg_id)
                     except Exception:
                         pass
                     await asyncio.sleep(1)
@@ -1423,9 +1417,10 @@ async def start_processing(client: Client, message: Message, user_id: int):
                             await asyncio.sleep(2)
                             # Touch the thread with a subject header (retry to avoid race)
                             header_sent = False
+                            header_msg_id = None
                             for _r in range(5):
                                 try:
-                                    await bot_api_send_message(channel_id, thread_id=provisional_thread, text=f"{subject}")
+                                    header_msg_id = await bot_api_send_message(channel_id, thread_id=provisional_thread, text=f"{subject}")
                                     header_sent = True
                                     break
                                 except Exception as e:
@@ -1433,6 +1428,13 @@ async def start_processing(client: Client, message: Message, user_id: int):
                                         logger.warning(f"Failed to send subject header in new thread {provisional_thread}: {e}")
                                         break
                                     await asyncio.sleep(1.0)
+                            # Delete the header message shortly after to keep the topic clean
+                            try:
+                                if header_msg_id:
+                                    await asyncio.sleep(0.5)
+                                    await bot_api_delete_message(channel_id, header_msg_id)
+                            except Exception:
+                                pass
                             # If header wasn't confirmed, give the thread a tiny bit more time before the first upload
                             try:
                                 if not header_sent:
