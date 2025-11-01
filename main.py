@@ -1383,7 +1383,9 @@ async def start_processing(client: Client, message: Message, user_id: int):
     except Exception:
         video_count = start_idx - 1
 
-    for idx, entry in enumerate(lines[start_idx - 1:], start=start_idx):
+    # When start_idx == 0 (auto-numbering), iterate from the first line
+    iter_start_line = start_idx if (start_idx and start_idx > 0) else 1
+    for idx, entry in enumerate(lines[iter_start_line - 1:], start=iter_start_line):
         # Check if a stop was requested
         if not active_downloads.get(user_id, False):
             try:
