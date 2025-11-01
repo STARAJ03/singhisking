@@ -807,6 +807,12 @@ async def download_file(url: str, filename: str) -> str:
         try:
             out_path = await loop.run_in_executor(_thread_pool, _ydl_download_blocking, url, sanitized_template)
             if os.path.exists(out_path):
+                # Ensure progressive playback if yt-dlp produced an mp4
+                if out_path.lower().endswith('.mp4'):
+                    try:
+                        await remux_faststart_async(out_path)
+                    except Exception:
+                        pass
                 return out_path
             else:
                 raise Exception("yt-dlp reported file but it does not exist")
