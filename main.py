@@ -778,9 +778,13 @@ async def download_file(url: str, filename: str) -> str:
                     await _download_http_to_file(session, url, out_name)
                     # check file size
                     if os.path.exists(out_name) and os.path.getsize(out_name) > 0:
-                        # Ensure mp4s are streamable by moving moov atom to start
+                        # Only for direct .mp4 links, move moov atom to the start for instant play
                         if out_name.lower().endswith('.mp4'):
-                            await remux_faststart_async(out_name)
+                            if os.path.exists(out_name) and os.path.getsize(out_name) > 0:
+                                try:
+                                    await remux_faststart_async(out_name)
+                                except Exception:
+                                    pass
                         return out_name
                     else:
                         raise Exception("Downloaded file empty")
