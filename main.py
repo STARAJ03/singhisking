@@ -879,14 +879,11 @@ async def upload_file_to_channel(
             if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                 raise Cancelled("Cancelled before upload start")
             if file_path.lower().endswith(".mp4"):
-                # Always embed original link into the title so users can open in browser if needed
+                # Embed original link ONLY if the video codec is not H.264/AVC
                 try:
-                    caption = _embed_link_in_title(caption, original_url)
-                except Exception:
-                    pass
-                # Optional: codec probe can be kept for future decisions, but we won't block on it
-                try:
-                    _ = await get_codecs_async(file_path)
+                    vcodec, _ = await get_codecs_async(file_path)
+                    if vcodec.lower() not in ("h264", "avc1"):
+                        caption = _embed_link_in_title(caption, original_url)
                 except Exception:
                     pass
                 # Extract thumbnail if possible
@@ -1615,6 +1612,13 @@ async def start_processing(client: Client, message: Message, user_id: int):
 
         if success:
             logger.info(f"Uploaded '{clean_name}' successfully under '{subject}' as #{video_count}.")
+            # Delete the provisional header message once the first upload succeeds to keep the thread clean
+            try:
+                if 'header_msg_id' in locals() and header_msg_id:
+                    await bot_api_delete_message(channel_id, header_msg_id)
+                    header_msg_id = None
+            except Exception:
+                pass
             processed += 1
         else:
             logger.error(f"Upload failed for '{clean_name}' under '{subject}'.")
