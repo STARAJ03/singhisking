@@ -879,13 +879,14 @@ async def upload_file_to_channel(
             if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                 raise Cancelled("Cancelled before upload start")
             if file_path.lower().endswith(".mp4"):
-                # If codec isn't H.264/AVC, keep uploading as video but augment caption with original URL
+                # Always embed original link into the title so users can open in browser if needed
                 try:
-                    vcodec, acodec = await get_codecs_async(file_path)
-                    if vcodec.lower() not in ("h264", "avc1"):
-                        # Non-playable codec: do NOT transcode and do NOT switch to document.
-                        # Instead, embed the original link into the title line and proceed with sendVideo.
-                        caption = _embed_link_in_title(caption, original_url)
+                    caption = _embed_link_in_title(caption, original_url)
+                except Exception:
+                    pass
+                # Optional: codec probe can be kept for future decisions, but we won't block on it
+                try:
+                    _ = await get_codecs_async(file_path)
                 except Exception:
                     pass
                 # Extract thumbnail if possible
