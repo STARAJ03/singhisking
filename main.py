@@ -1395,17 +1395,17 @@ async def start_processing(client: Client, message: Message, user_id: int):
                         await mongo_set_thread_id(channel_id, subject_norm, thread_id)
                         logger.info(f"Created forum topic '{subject}' with thread_id={thread_id}")
                         # Small delay to allow thread to become available
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(3)
                         # Touch the thread with a subject header to confirm availability (retry to avoid race)
                         header_sent = False
                         header_msg_id = None
-                        for _r in range(5):
+                        for _r in range(8):
                             try:
                                 header_msg_id = await bot_api_send_message(channel_id, thread_id=thread_id, text=f"{subject}")
                                 header_sent = True
                                 break
                             except Exception as e:
-                                if _r == 4:
+                                if _r == 7:
                                     logger.warning(f"Failed to send subject header in new thread {thread_id}: {e}")
                                     break
                                 await asyncio.sleep(1.0)
@@ -1417,13 +1417,6 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     try:
                         if not locals().get('header_sent', True):
                             await asyncio.sleep(2)
-                    except Exception:
-                        pass
-                    # Delete the header message shortly after to keep the topic clean
-                    try:
-                        if 'header_msg_id' in locals() and header_msg_id:
-                            await asyncio.sleep(0.5)
-                            await bot_api_delete_message(channel_id, header_msg_id)
                     except Exception:
                         pass
                     await asyncio.sleep(1)
@@ -1467,27 +1460,20 @@ async def start_processing(client: Client, message: Message, user_id: int):
                             last_subject = subject
                             is_forum = True
                             # Small delay to allow thread to become available
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(3)
                             # Touch the thread with a subject header (retry to avoid race)
                             header_sent = False
                             header_msg_id = None
-                            for _r in range(5):
+                            for _r in range(8):
                                 try:
                                     header_msg_id = await bot_api_send_message(channel_id, thread_id=provisional_thread, text=f"{subject}")
                                     header_sent = True
                                     break
                                 except Exception as e:
-                                    if _r == 4:
+                                    if _r == 7:
                                         logger.warning(f"Failed to send subject header in new thread {provisional_thread}: {e}")
                                         break
                                     await asyncio.sleep(1.0)
-                            # Delete the header message shortly after to keep the topic clean
-                            try:
-                                if header_msg_id:
-                                    await asyncio.sleep(0.5)
-                                    await bot_api_delete_message(channel_id, header_msg_id)
-                            except Exception:
-                                pass
                             # If header wasn't confirmed, give the thread a tiny bit more time before the first upload
                             try:
                                 if not header_sent:
