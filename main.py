@@ -1246,7 +1246,7 @@ async def txt_handler(client: Client, message: Message):
         'step': 'start_number'
     }
     try:
-        await ack.edit_text(f"📋 Found {len(lines)} items. Please send the starting line number (1–{len(lines)}).")
+        await ack.edit_text(f"📋 Found {len(lines)} items. Send starting line number (0 for auto, or 1–{len(lines)}).")
     except MessageNotModified:
         pass
 
@@ -1264,14 +1264,14 @@ async def input_handler(client: Client, message: Message):
     if data['step'] == 'start_number':
         try:
             start = int(text)
-            if 1 <= start <= data['total']:
+            if start == 0 or (1 <= start <= data['total']):
                 data['start_number'] = start
                 data['step'] = 'channel_id'
                 await message.reply_text("📝 Got it. Now send the **channel ID** (e.g. `-1001234567890`).")
             else:
-                await message.reply_text(f"❌ Please send a number between 1 and {data['total']}.")
+                await message.reply_text(f"❌ Please send 0 for auto-numbering or a number between 1 and {data['total']}.")
         except ValueError:
-            await message.reply_text("❌ That's not a valid integer. Please send the starting line number.")
+            await message.reply_text("❌ That's not a valid integer. Send 0 for auto-numbering or a starting line number.")
 
     elif data['step'] == 'channel_id':
         # Validate channel ID format (starts with -100 for supergroups/channels)
