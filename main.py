@@ -1372,16 +1372,9 @@ async def start_processing(client: Client, message: Message, user_id: int):
     processed = 0
     failed = 0
     last_subject = None  # Keep track of the previous subject
-    # Determine starting index: use DM-provided start_idx if >0, else auto-number from Mongo last_index
-    try:
-        if start_idx and int(start_idx) > 0:
-            video_count = int(start_idx) - 1
-        else:
-            li = await mongo_get_last_index(channel_id, subject_norm)
-            video_count = (li or 0)
-            # If no last_index, and we are about to create a new topic, we'll reset to 0 there
-    except Exception:
-        video_count = start_idx - 1
+    # Per-topic numbering: map subject_norm -> last_index seen in this run
+    subject_counts: dict[str, int] = {}
+    auto_numbering = not (start_idx and int(start_idx) > 0)
 
     # When start_idx == 0 (auto-numbering), iterate from the first line
     iter_start_line = start_idx if (start_idx and start_idx > 0) else 1
@@ -1410,6 +1403,16 @@ async def start_processing(client: Client, message: Message, user_id: int):
         subject = subjects[0]  # We only take the first subject in the list
         subject_norm = _normalize_subject(subject)
         clean_name = clean_title(title_part)
+        # Initialize per-topic count on first encounter this run
+        if subject_norm not in subject_counts:
+            if auto_numbering:
+                try:
+                    li = await mongo_get_last_index(channel_id, subject_norm)
+                    subject_counts[subject_norm] = li or 0
+                except Exception:
+                    subject_counts[subject_norm] = 0
+            else:
+                subject_counts[subject_norm] = int(start_idx) - 1
 
         # If subject changed from last_subject
         if subject != last_subject:
@@ -1552,8 +1555,8 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     except Exception as e2:
                         logger.error(f"Failed to send subject header via Bot API: {e2}")
 
-        # Increment video count
-        video_count += 1
+        # Determine current index for this subject
+        current_index = subject_counts[subject_norm] + 1
 
         # Download the file with retry logic
         item_status = await message.reply_text(f"⬇️ [{idx}/{total}] Downloading: {clean_name}")
@@ -1624,7 +1627,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
 
         # Upload under this subject with styled caption
         display_title = re.sub(r"\[[^\]]+\]\s*", "", title_part).strip()
-        caption = build_caption(subject, video_count, display_title, batch_name, downloaded_by)
+        caption = build_caption(subject, current_index, display_title, batch_name, downloaded_by)
         await item_status.edit_text(f"📤 [{idx}/{total}] Uploading: {clean_name}")
         success = False
         try:
@@ -1672,7 +1675,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
                 logger.error(f"Retry after creating new topic failed: {e}")
 
         if success:
-            logger.info(f"Uploaded '{clean_name}' successfully under '{subject}' as #{video_count}.")
+            logger.info(f"Uploaded '{clean_name}' successfully under '{subject}' as #{current_index}.")
             # Delete the provisional header message once the first upload succeeds to keep the thread clean
             try:
                 if 'header_msg_id' in locals() and header_msg_id:
@@ -1683,14 +1686,15 @@ async def start_processing(client: Client, message: Message, user_id: int):
             # Persist last_index for this topic (continue numbering on future additions)
             try:
                 if is_forum and current_thread_id is not None:
-                    await mongo_set_last_index(channel_id, subject_norm, video_count)
+                    await mongo_set_last_index(channel_id, subject_norm, current_index)
             except Exception:
                 pass
+            # Update in-memory counter for this subject
+            subject_counts[subject_norm] = current_index
             processed += 1
         else:
             logger.error(f"Upload failed for '{clean_name}' under '{subject}'.")
             failed += 1
-            video_count -= 1  # Decrement if upload failed
 
         # Clean up downloaded file after upload (regardless of success)
         if file_path and os.path.exists(file_path):
