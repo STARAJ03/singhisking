@@ -161,6 +161,18 @@ async def get_codecs_async(filename: str) -> tuple[str, str]:
         pass
     return v, a
 
+async def get_h264_profile_async(filename: str) -> str:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            'ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=profile', '-of', 'csv=p=0', filename,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 0:
+            return stdout.decode().strip()
+    except Exception:
+        pass
+    return ""
+
 async def transcode_to_streamable_mp4_async(filename: str) -> Optional[str]:
     try:
         out_path = filename + ".streamable.mp4"
@@ -857,6 +869,17 @@ async def upload_file_to_channel(
                             await remux_faststart_async(file_path)
                         except Exception:
                             pass
+                    else:
+                        # If H.264 but not baseline profile, transcode to baseline for wider client compatibility
+                        profile = await get_h264_profile_async(file_path)
+                        if profile and profile.lower() not in ("baseline",):
+                            new_path = await transcode_to_streamable_mp4_async(file_path)
+                            if new_path:
+                                file_path = new_path
+                            try:
+                                await remux_faststart_async(file_path)
+                            except Exception:
+                                pass
                 except Exception:
                     pass
                 # Extract thumbnail if possible
