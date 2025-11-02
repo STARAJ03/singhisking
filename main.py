@@ -961,8 +961,7 @@ async def download_file(url: str, filename: str) -> str:
             raise Exception(f"Download failed for {url}: {e}")
 
 # ... rest of your original code continues unchanged ...
-progress_msg = await status_msg.reply_text(f"📤 Preparing upload: **{os.path.basename(file_path)}**")
-start_time = time.time()
+
 # ─── Upload helper (unchanged from your file) ───────────────────────────────────
 async def upload_file_to_channel(
     bot: Client,
@@ -980,6 +979,10 @@ async def upload_file_to_channel(
     Retries up to 3 times on RPCError/FloodWait.
     Ensures that thumbnails are cleaned up after use.
     """
+    progress_msg = await status_msg.reply_text(
+        f"📤 Preparing upload: **{os.path.basename(file_path)}**"
+    )
+    start_time = time.time()
     # Total attempts per upload = max_retries; reattempts = max_retries - 1
     max_retries = 1
 
