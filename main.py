@@ -879,7 +879,7 @@ async def download_file(url: str, filename: str) -> str:
 
                         # single Telegram progress message
                         progress_msg = await app.send_message(
-                            chat_id=YOUR_LOG_CHAT_ID,  # or message.chat.id
+                            chat_id=status_msg.chat.id,  # or message.chat.id
                             text=f"⬇️ Starting download: **{filename}**"
                         )
 
