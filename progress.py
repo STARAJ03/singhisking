@@ -41,8 +41,10 @@ def speed_in_mbps(bytes_done, elapsed_time):
 # 🚀 Main Progress Handler (works for Pyrogram + manual)
 # ────────────────────────────────
 async def progress_callback(
-    current, total, message, start_time, file_name, index, total_files, next_name=None, phase="Uploading"
+    current, total, message, start_time, file_name, index, total_files,
+    next_name=None, phase="Uploading", *args, **kwargs
 ):
+
     """Update a single Telegram message with download/upload progress"""
 
     # Rename to more descriptive vars
@@ -128,3 +130,4 @@ async def track_progress(
         next_name,
         phase
     )
+
