@@ -72,7 +72,7 @@ async def progress_callback(
         f"📁 **Size:** {done} / {total_hr}\n"
         f"⚡ **Speed:** {speed:.2f} MB/s\n"
         f"⏱️ **ETA:** {int(eta)}s\n"
-        f"📂 **Queue:** {index}/{lines}\n"
+        f"📂 **Queue:** {index}/{len(lines)}\n"
     )
 
     if next_name:
@@ -135,6 +135,7 @@ async def track_progress(
         next_name,
         phase
     )
+
 
 
 
