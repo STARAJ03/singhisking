@@ -1425,7 +1425,16 @@ async def start_processing(client: Client, message: Message, user_id: int):
             failed += 1
             continue
 
-        title_part, url = entry.rsplit(":", 1)
+        match = re.search(r'https?://', entry)
+        if not match:
+            logger.warning(f"Skipping invalid line {idx}: {entry}")
+            failed += 1
+            continue
+
+        split_index = match.start()
+        title_part = entry[:split_index].strip()
+        url = entry[split_index:].strip()
+
         subjects = extract_subjects(title_part)
         subject = subjects[0]  # We only take the first subject in the list
         subject_norm = _normalize_subject(subject)
