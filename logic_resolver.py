@@ -139,7 +139,7 @@ async def resolve_url(url: str, name: str = None, raw_text2: str = "1080") -> di
 
     # --- Brightcove bcov_auth replacement using cwtoken (if present) ---
     # --- Brightcove bcov_auth replacement using cwtoken (if present) ---
-    if any(x in url_lower for x in ["edge.api.brightcove.com", "cloudfront.net/brightcove/"]):
+    if any(x in url_lower for x in ["edge.api.brightcove.com", "d14v4v80cpjht7.cloudfront.net/"]):
         try:
             if CWTOKEN:
                 if "bcov_auth" not in url_lower:
