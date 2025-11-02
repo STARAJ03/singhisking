@@ -29,7 +29,8 @@ from pyrogram import Client, filters, idle
 from pyrogram.errors import FloodWait, RPCError, BadMsgNotification, MessageNotModified
 from pyrogram.types import Message
 from typing import Dict, List, Optional
-from secrets_config import CPTOKEN
+from link_resolver import resolve_url
+
 # NEW imports for async HTTP downloads and youtube support
 import aiohttp
 import aiofiles
@@ -817,6 +818,11 @@ async def download_file(url: str, filename: str) -> str:
     - Adds ffmpeg-based support for .m3u8 HLS streams.
     Returns the path to the downloaded file, or raises Exception on failure.
     """
+    resolved = await resolve_url(url1, name=filename, raw_text2=raw_text2_variable_if_you_have_it)
+    # use resolved["url"] instead of url for ffmpeg/yt-dlp
+    url1 = resolved.get("url", url)
+    # optionally use resolved["cmd"] if you want to run yt-dlp directly
+
     url = url.strip()
     url_lower = url.lower()
     # create downloads directory if not exists
