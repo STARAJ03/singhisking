@@ -862,7 +862,7 @@ async def download_file(url: str, filename: str) -> str:
             cmd = [
                 "ffmpeg", "-y",
                     *headers,
-                    "-i", url,,
+                    "-i", url,
                 "-map", "0:v:0", "-map", "0:a?",
                 "-c", "copy",
                 "-bsf:a", "aac_adtstoasc",
