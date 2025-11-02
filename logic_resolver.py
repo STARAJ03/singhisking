@@ -138,18 +138,18 @@ async def resolve_url(url: str, name: str = None, raw_text2: str = "1080") -> di
             logger.warning(f"classplus signing failed: {e}")
 
     # --- Brightcove bcov_auth replacement using cwtoken (if present) ---
-    if "edge.api.brightcove.com" in url_lower:
+    # --- Brightcove bcov_auth replacement using cwtoken (if present) ---
+    if any(x in url_lower for x in ["edge.api.brightcove.com", "cloudfront.net/brightcove/"]):
         try:
             if CWTOKEN:
                 if "bcov_auth" not in url_lower:
-                    if "?" in url:
-                        url = url.split("bcov_auth")[0] + f"bcov_auth={CWTOKEN}"
-                    else:
-                        url = url + f"?bcov_auth={CWTOKEN}"
-                    result["url"] = url
-                    return result
+                    joiner = "&" if "?" in url else "?"
+                    url = f"{url}{joiner}bcov_auth={CWTOKEN}"
+                result["url"] = url
+                return result
         except Exception as e:
             logger.warning(f"brightcove handling failed: {e}")
+
 
     # --- anonymouspw proxy (childId+parentId) ---
     if "childid" in url_lower and "parentid" in url_lower:
