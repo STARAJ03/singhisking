@@ -1736,7 +1736,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
         try:
             if is_forum and current_thread_id is not None:
                 await mongo_set_last_index(channel_id, subject_norm, current_index)
-         except Exception:
+        except Exception:
             pass
         # Update in-memory counter for this subject
         subject_counts[subject_norm] = current_index
