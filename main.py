@@ -811,7 +811,7 @@ def _ydl_download_blocking(url: str, out_template: str) -> str:
         return filename
 
 # Download detetction
-async def download_file(url: str, filename: str) -> str:
+async def download_file(url: str, filename: str, status_msg=None) -> str:
     """
     Unified downloader:
     - .m3u8 handled via ffmpeg
@@ -1690,7 +1690,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     base_name = clean_name
 
                 # 🔹 Call unified downloader — handles m3u8 internally
-                file_path = await download_file(url_stripped, base_name)
+                file_path = await download_file(url_stripped, base_name, status_msg)
 
                 download_success = True
                 break
