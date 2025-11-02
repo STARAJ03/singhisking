@@ -1783,7 +1783,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
 user_data.pop(user_id, None)
 active_downloads.pop(user_id, None)
 active_downloads[user_id] = False
-await status_msg.edit_text("✅ All items processed.")
+    await status_msg.edit_text("✅ All items processed.")
 await tracker.stop()
 return True
 
