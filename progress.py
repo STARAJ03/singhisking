@@ -132,3 +132,10 @@ async def track_progress(
         file_name,
         phase
     )
+
+    # ✅ Final cleanup (delete message)
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
