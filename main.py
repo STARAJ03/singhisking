@@ -1796,7 +1796,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
                 cancel_user_id=user_id,
                 original_url=url_stripped,
                 index=start_idx + 1,
-                total_files=len(urls),
+                total_files=len(total),
             )
             if is_forum:
                 logger.info(f"Uploaded to thread_id={current_thread_id} for subject='{subject}'")
