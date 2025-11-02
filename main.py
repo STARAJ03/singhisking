@@ -28,6 +28,8 @@ from pyrogram import Client, filters, idle
 from pyrogram.errors import FloodWait, RPCError, BadMsgNotification, MessageNotModified
 from pyrogram.types import Message
 from typing import Dict, List, Optional
+from progress import progress_callback
+
 
 # NEW imports for async HTTP downloads and youtube support
 import aiohttp
@@ -868,23 +870,68 @@ async def download_file(url: str, filename: str) -> str:
         async with aiohttp.ClientSession() as session:
             for attempt in range(retries):
                 try:
-                    await _download_http_to_file(session, url, out_name)
-                    # check file size
+                    async with session.get(url) as resp:
+                        if resp.status != 200:
+                            raise Exception(f"HTTP {resp.status}")
+                        total = int(resp.headers.get("Content-Length", 0))
+                        downloaded = 0
+                        start_time = time.time()
+
+                        # single Telegram progress message
+                        progress_msg = await app.send_message(
+                            chat_id=YOUR_LOG_CHAT_ID,  # or message.chat.id
+                            text=f"⬇️ Starting download: **{filename}**"
+                        )
+
+                        with open(out_name, "wb") as f:
+                            async for chunk in resp.content.iter_chunked(1024 * 64):
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                                downloaded += len(chunk)
+
+                                # update every 3 sec
+                                if time.time() - start_time > 3:
+                                    await progress_callback(
+                                        downloaded,
+                                        total,
+                                        progress_msg,
+                                        start_time,
+                                        filename,
+                                        index=1,             # replace with your file index
+                                        total_files=10,      # replace with your total queue variable
+                                        next_name="Next file name here",
+                                        phase="Downloading"
+                                    )
+                                    start_time = time.time()
+
+                        # final update
+                        await progress_callback(
+                            downloaded,
+                            total,
+                            progress_msg,
+                            start_time,
+                            filename,
+                            index=1,
+                            total_files=10,
+                            phase="Downloading"
+                        )
+
                     if os.path.exists(out_name) and os.path.getsize(out_name) > 0:
-                        # Only for direct .mp4 links, move moov atom to the start for instant play
                         if out_name.lower().endswith('.mp4'):
-                            if os.path.exists(out_name) and os.path.getsize(out_name) > 0:
-                                try:
-                                    await remux_faststart_async(out_name)
-                                except Exception:
-                                    pass
+                            try:
+                                await remux_faststart_async(out_name)
+                            except Exception:
+                                pass
                         return out_name
                     else:
                         raise Exception("Downloaded file empty")
+
                 except Exception as e:
                     last_exc = e
                     logger.warning(f"HTTP download attempt {attempt+1} failed for {url}: {e}")
                     await asyncio.sleep(2)
+
             # all http attempts failed; fall through to try yt-dlp if appropriate
             if is_ytdlp:
                 logger.info("Falling back to yt-dlp after HTTP failure")
@@ -914,7 +961,8 @@ async def download_file(url: str, filename: str) -> str:
             raise Exception(f"Download failed for {url}: {e}")
 
 # ... rest of your original code continues unchanged ...
-
+progress_msg = await status_msg.reply_text(f"📤 Preparing upload: **{os.path.basename(file_path)}**")
+start_time = time.time()
 # ─── Upload helper (unchanged from your file) ───────────────────────────────────
 async def upload_file_to_channel(
     bot: Client,
@@ -1054,8 +1102,20 @@ async def upload_file_to_channel(
                             caption=caption,
                             thumb=thumb,
                             duration=duration,
-                            supports_streaming=True
+                            supports_streaming=True,
+                            progress=progress_callback,
+                            progress_args=(
+                                progress_msg,                     # the message to edit
+                                os.path.basename(file_path),      # file name
+                                os.path.getsize(file_path),       # total bytes
+                                start_time,                       # time started
+                                1,                                # current index (replace with real queue index)
+                                10,                               # total files (replace with queue size variable)
+                                None,                             # next file name (optional)
+                                "Uploading"                       # phase name
+                            )
                         )
+
                     return True
                 finally:
                     if thumb and os.path.exists(thumb):
@@ -1122,7 +1182,18 @@ async def upload_file_to_channel(
                     await bot.send_document(
                         chat_id=channel_id,
                         document=file_path,
-                        caption=caption
+                        caption=caption,
+                        progress=progress_callback,
+                        progress_args=(
+                            progress_msg,
+                            os.path.basename(file_path),
+                            os.path.getsize(file_path),
+                            start_time,
+                            1,
+                            10,
+                            None,
+                            "Uploading"
+                        )
                     )
                 return True
 
