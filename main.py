@@ -1009,7 +1009,11 @@ async def upload_file_to_channel(
     pyro_target: Optional[int | str] = None,
     cancel_user_id: Optional[int] = None,
     original_url: Optional[str] = None,
+    index: int = 1,
+    total_files: int = 1,
+    next_name: Optional[str] = None,
 ) -> bool:
+
     """
     Uploads either .mp4 (with thumbnail) or any other document to the channel.
     Retries up to 3 times on RPCError/FloodWait.
