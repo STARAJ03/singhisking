@@ -1425,7 +1425,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
             failed += 1
             continue
 
-        title_part, url = entry.split(":", 1)
+        title_part, url = entry.rsplit(":", 1)
         subjects = extract_subjects(title_part)
         subject = subjects[0]  # We only take the first subject in the list
         subject_norm = _normalize_subject(subject)
