@@ -41,7 +41,7 @@ def speed_in_mbps(bytes_done, elapsed_time):
 # 🚀 Main Progress Handler (works for Pyrogram + manual)
 # ────────────────────────────────
 async def progress_callback(
-    current, total, message, start_time, file_name, index, total_files,
+    current, total, message, start_time, file_name, index, lines,
     next_name=None, phase="Uploading", *args, **kwargs
 ):
     # Make sure start_time is numeric
@@ -72,7 +72,7 @@ async def progress_callback(
         f"📁 **Size:** {done} / {total_hr}\n"
         f"⚡ **Speed:** {speed:.2f} MB/s\n"
         f"⏱️ **ETA:** {int(eta)}s\n"
-        f"📂 **Queue:** {index}/{total_files}\n"
+        f"📂 **Queue:** {index}/{lines}\n"
     )
 
     if next_name:
@@ -94,7 +94,7 @@ async def track_progress(
     reader,
     writer,
     index,
-    total_files,
+    lines,
     next_name=None,
     phase="Downloading"
 ):
@@ -118,7 +118,7 @@ async def track_progress(
                 start_time,
                 file_name,
                 index,
-                total_files,
+                lines,
                 next_name,
                 phase
             )
@@ -131,10 +131,11 @@ async def track_progress(
         start_time,
         file_name,
         index,
-        total_files,
+        lines,
         next_name,
         phase
     )
+
 
 
 
