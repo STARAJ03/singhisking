@@ -835,10 +835,38 @@ async def download_file(url: str, filename: str) -> str:
     is_ytdlp = any(h in url_lower for h in ytdlp_hosts) and not url_lower.endswith(".pdf")
 
         # --- UPDATED: Handle .m3u8 (HLS) links using ffmpeg ---
+        # --- UPDATED: Handle protected .m3u8 (HLS) links with pre-signing and ffmpeg ---
     if url_lower.endswith(".m3u8") or ".m3u8?" in url_lower:
         out_name = f"downloads/{filename}.mp4"
         try:
-            # Probe for available resolutions using ffprobe
+            import requests
+
+            # --- Step 1: Try to pre-sign Classplus / Cloudfront URLs ---
+            if any(x in url_lower for x in [
+                "classplusapp.com", "media-cdn", "tencdn", "cpvod", "cloudfront.net"
+            ]):
+                try:
+                    headers = {
+                        'x-access-token': CPTOKEN or "",
+                        'accept-language': 'EN',
+                        'api-version': '18',
+                        'user-agent': 'Mobile-Android',
+                    }
+                    params = {"url": url}
+                    r = requests.get(
+                        'https://api.classplusapp.com/cams/uploader/video/jw-signed-url',
+                        headers=headers, params=params, timeout=10
+                    )
+                    if r.ok and "url" in r.json():
+                        old_url = url
+                        url = r.json()["url"]
+                        logger.info(f"Replaced protected HLS URL:\n{old_url}\n→ {url}")
+                    else:
+                        logger.warning(f"Classplus API returned: {r.text}")
+                except Exception as e:
+                    logger.warning(f"Classplus pre-signing failed: {e}")
+
+            # --- Step 2: Probe resolutions (pick ≤720p if available) ---
             cmd_probe = [
                 "ffprobe", "-v", "error",
                 "-select_streams", "v",
@@ -854,15 +882,12 @@ async def download_file(url: str, filename: str) -> str:
             heights = [int(h) for h in stdout.decode().split() if h.isdigit()]
             target_res = max([h for h in heights if h <= 720], default=(min(heights) if heights else 720))
 
-            # Add safe headers to avoid blocking by some CDNs
-            headers = [
-                "-headers", "User-Agent: Mozilla/5.0\r\n",
-                "-headers", "Referer: https://google.com\r\n"
-            ]
+            # --- Step 3: Build ffmpeg command safely ---
             cmd = [
                 "ffmpeg", "-y",
-                    *headers,
-                    "-i", url,
+                "-user_agent", "Mozilla/5.0",
+                "-referer", "https://google.com",
+                "-i", f"{url}",
                 "-map", "0:v:0", "-map", "0:a?",
                 "-c", "copy",
                 "-bsf:a", "aac_adtstoasc",
@@ -870,14 +895,17 @@ async def download_file(url: str, filename: str) -> str:
                 out_name
             ]
 
+            logger.debug(f"Running ffmpeg command: {' '.join(cmd)}")
+
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout, stderr = await proc.communicate()
+            _, stderr = await proc.communicate()
             err_text = stderr.decode(errors="ignore")
 
+            # --- Step 4: Validate output ---
             if proc.returncode == 0 and os.path.exists(out_name) and os.path.getsize(out_name) > 1024 * 1024:
                 try:
                     await remux_faststart_async(out_name)
@@ -886,8 +914,10 @@ async def download_file(url: str, filename: str) -> str:
                 return out_name
             else:
                 raise Exception(f"ffmpeg failed or empty file.\n{err_text[-500:]}")
+
         except Exception as e:
             raise Exception(f"HLS (.m3u8) download failed: {e}")
+
 
 
     # If URL is obviously a direct link and not a streaming page, do HTTP streaming
