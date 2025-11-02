@@ -775,7 +775,7 @@ async def bot_api_delete_message(chat_id: int, message_id: int) -> None:
                 raise Exception(f"BotAPI deleteMessage failed: {data}")
 
 # --- NEW: http download helper (async) ---
-async def _download_http_to_file(session: aiohttp.ClientSession, url: str, tmp_path: str, status_msg=None, index=1, total_files=1, next_name=None) -> None:
+async def _download_http_to_file(session: aiohttp.ClientSession, url: str, tmp_path: str, status_msg=None, index=1, lines=1, next_name=None) -> None:
     """
     Streams a resource from `url` and writes to tmp_path atomically.
     Shows progress in a single Telegram message.
@@ -807,7 +807,7 @@ async def _download_http_to_file(session: aiohttp.ClientSession, url: str, tmp_p
                     reader=resp.content,
                     writer=f,
                     index=index,
-                    total_files=total,
+                    lines=total,
                     next_name=next_name,
                     phase="Downloading"
                 )
@@ -935,7 +935,7 @@ async def download_file(url: str, filename: str, status_msg=None) -> str:
                                         start_time,
                                         filename,
                                         index=1,             # replace with your file index
-                                        total_files=10,      # replace with your total queue variable
+                                        lines=10,      # replace with your total queue variable
                                         next_name="Next file name here",
                                         phase="Downloading"
                                     )
@@ -949,7 +949,7 @@ async def download_file(url: str, filename: str, status_msg=None) -> str:
                             start_time,
                             filename,
                             index=1,
-                            total_files=10,
+                            lines=10,
                             phase="Downloading"
                         )
 
@@ -1010,7 +1010,7 @@ async def upload_file_to_channel(
     cancel_user_id: Optional[int] = None,
     original_url: Optional[str] = None,
     index: int = 1,
-    total_files: int = 1,
+    lines: int = 1,
     next_name: Optional[str] = None,
 ) -> bool:
 
@@ -1147,7 +1147,7 @@ async def upload_file_to_channel(
                             duration=duration,
                             supports_streaming=True,
                             progress=progress_callback,
-                            progress_args=(status_msg, time.time(), os.path.basename(file_path), index, total_files, next_name, "Uploading")
+                            progress_args=(status_msg, time.time(), os.path.basename(file_path), index, lines, next_name, "Uploading")
                         )
 
                     return True
@@ -1796,7 +1796,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
                 cancel_user_id=user_id,
                 original_url=url_stripped,
                 index=start_idx + 1,
-                total_files=total_files,
+                lines=lines,
             )
             if is_forum:
                 logger.info(f"Uploaded to thread_id={current_thread_id} for subject='{subject}'")
