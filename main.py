@@ -1390,14 +1390,14 @@ async def start_processing(client: Client, message: Message, user_id: int):
     active_downloads[user_id] = True
     status_msg = await message.reply_text(
         f"🚀 Starting processing:\n"
-            tracker = ProgressTracker(client, status_msg, total)
-            await tracker.start()
         f"• Start line: {start_idx}\n"
         f"• Total items: {total}\n"
         f"• Batch name: {batch_name}\n"
         f"• Channel: {channel_id}\n"
         f"• Downloaded by: {downloaded_by}\n\n"
         f"Completed: 0 / {total}"
+        tracker = ProgressTracker(client, status_msg, total)
+        await tracker.start()
     )
 
     processed = 0
