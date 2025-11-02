@@ -44,6 +44,11 @@ async def progress_callback(
     current, total, message, start_time, file_name, index, total_files,
     next_name=None, phase="Uploading", *args, **kwargs
 ):
+    # Make sure start_time is numeric
+    try:
+        start_time = float(start_time)
+    except Exception:
+        start_time = time.time()
 
     """Update a single Telegram message with download/upload progress"""
 
@@ -130,4 +135,5 @@ async def track_progress(
         next_name,
         phase
     )
+
 
