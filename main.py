@@ -807,7 +807,7 @@ async def _download_http_to_file(session: aiohttp.ClientSession, url: str, tmp_p
                     reader=resp.content,
                     writer=f,
                     index=index,
-                    total_files=total_files,
+                    total_files=total,
                     next_name=next_name,
                     phase="Downloading"
                 )
