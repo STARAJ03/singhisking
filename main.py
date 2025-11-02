@@ -1740,7 +1740,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
             pass
         # Update in-memory counter for this subject
         subject_counts[subject_norm] = current_index
-         processed += 1
+        processed += 1
     else:
         logger.error(f"Upload failed for '{clean_name}' under '{subject}'.")
         failed += 1
