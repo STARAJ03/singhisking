@@ -28,7 +28,7 @@ from pyrogram import Client, filters, idle
 from pyrogram.errors import FloodWait, RPCError, BadMsgNotification, MessageNotModified
 from pyrogram.types import Message
 from typing import Dict, List, Optional
-
+from secrets_config import CPTOKEN
 # NEW imports for async HTTP downloads and youtube support
 import aiohttp
 import aiofiles
