@@ -855,11 +855,14 @@ async def download_file(url: str, filename: str) -> str:
             target_res = max([h for h in heights if h <= 720], default=(min(heights) if heights else 720))
 
             # Add safe headers to avoid blocking by some CDNs
-            headers = "User-Agent: Mozilla/5.0\r\nReferer: https://google.com\r\n"
+            headers = [
+                "-headers", "User-Agent: Mozilla/5.0\r\n",
+                "-headers", "Referer: https://google.com\r\n"
+            ]
             cmd = [
                 "ffmpeg", "-y",
-                "-headers", headers,
-                "-i", url,
+                    *headers,
+                    "-i", url,,
                 "-map", "0:v:0", "-map", "0:a?",
                 "-c", "copy",
                 "-bsf:a", "aac_adtstoasc",
