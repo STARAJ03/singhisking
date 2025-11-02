@@ -5,7 +5,7 @@ import time
 # ────────────────────────────────
 # 🔧 CONFIGURATION
 # ────────────────────────────────
-UPDATE_INTERVAL = 3  # seconds between UI updates
+UPDATE_INTERVAL = 5  # seconds between UI updates
 BAR_LENGTH = 20      # characters for progress bar
 
 
@@ -135,6 +135,7 @@ async def track_progress(
         next_name,
         phase
     )
+
 
 
 
