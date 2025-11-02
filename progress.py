@@ -133,9 +133,12 @@ async def track_progress(
         phase
     )
 
-    # ✅ Final cleanup (delete message)
-    try:
-        await message.delete()
-    except Exception:
-        pass
+    # ✅ Auto-delete progress message when complete
+    if percent >= 100:
+        await asyncio.sleep(2)  # short delay so user can see 100%
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
 
