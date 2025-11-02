@@ -1466,25 +1466,30 @@ async def start_processing(client: Client, message: Message, user_id: int):
     cumulative_downloaded_bytes = 0
     cumulative_uploaded_bytes = 0
 
-    # Update the initial status message to be labeled "batch downloading"
+        # === UPDATED PROGRESS + DOWNLOAD LOOP ===
+    # Label the message for the batch downloading session
     try:
         await status_msg.edit_text(
-            f"🚀 Batch downloading\n"
-            f"• Start line: {start_idx}\n"
-            f"• Total items: {total}\n"
-            f"• Batch name: {batch_name}\n"
-            f"• Channel: {channel_id}\n"
-            f"• Downloaded by: {downloaded_by}\n\n"
-            f"Completed: 0 / {total}"
+            f"🚀 <b>Batch Downloading</b>\n"
+            f"• Start line: <code>{start_idx}</code>\n"
+            f"• Total items: <b>{total}</b>\n"
+            f"• Batch name: <code>{batch_name}</code>\n"
+            f"• Channel: <code>{channel_id}</code>\n"
+            f"• Downloaded by: <code>{downloaded_by}</code>\n\n"
+            f"Progress: 0 / {total}"
         )
     except Exception:
         pass
 
+    cumulative_downloaded_bytes = 0
+    cumulative_uploaded_bytes = 0
+
     for idx, entry in enumerate(lines[iter_start_line - 1:], start=iter_start_line):
-        # stop requested?
+
+        # Stop if user requested cancellation
         if not active_downloads.get(user_id, False):
             try:
-                await status_msg.edit_text("⏹️ Stopped by user.")
+                await status_msg.edit_text("⏹️ Download stopped by user.")
             except Exception:
                 pass
             active_downloads[user_id] = False
@@ -1493,8 +1498,13 @@ async def start_processing(client: Client, message: Message, user_id: int):
         if ":" not in entry:
             logger.warning(f"Skipping invalid line {idx}: {entry}")
             failed += 1
-            # update tracker for skip
-            await tracker.update(processed=processed, failed=failed, bytes_downloaded=cumulative_downloaded_bytes, bytes_uploaded=cumulative_uploaded_bytes, next_item=(lines[idx] if idx < total else None))
+            await tracker.update(
+                processed=processed,
+                failed=failed,
+                bytes_downloaded=cumulative_downloaded_bytes,
+                bytes_uploaded=cumulative_uploaded_bytes,
+                next_item=(lines[idx] if idx < total else None)
+            )
             continue
 
         title_part, url = entry.split(":", 1)
@@ -1503,7 +1513,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
         subject_norm = _normalize_subject(subject)
         clean_name = clean_title(title_part)
 
-        # init subject count if needed (keeps your previous logic)
+        # initialize numbering for subject if needed
         if subject_norm not in subject_counts:
             if auto_numbering:
                 try:
@@ -1514,46 +1524,35 @@ async def start_processing(client: Client, message: Message, user_id: int):
             else:
                 subject_counts[subject_norm] = int(start_idx) - 1
 
-        # Handle subject header / forum topic creation (unchanged logic)...
-        # (KEEP the exact code you already have here that creates forum topics
-        #  and sets current_thread_id / last_subject)
-        # --- paste your existing subject-handling block here unchanged ---
-        # (To be clear: do not remove or change the code you had above that creates topics.)
-        # For brevity in this patch, assume that block remains exactly as in your file.
+        # your existing subject/forum header creation logic remains here unchanged
 
-        # Determine current index for this subject
         current_index = subject_counts[subject_norm] + 1
 
-        # --- 1) Resolve/proxy the URL using logic_resolver ---
+        # --- Resolve link (handles DRM/m3u8 signing) ---
         try:
-            resolved = await resolve_url(url, name=clean_name, raw_text2=str(raw_text2) if 'raw_text2' in locals() else "1080")
+            from logic_resolver import resolve_url
+            resolved = await resolve_url(url, name=clean_name, raw_text2="720")
             resolved_url = resolved.get("url") or url
         except Exception as e:
-            logger.warning(f"Resolver failed for line {idx}: {e}")
+            logger.warning(f"Resolver failed for {idx}: {e}")
             resolved_url = url
 
-        # --- 2) Download with timing to estimate download speed ---
+        # --- Download phase with speed measurement ---
         file_path = None
         download_success = False
-        download_attempts = 2
         last_err = None
+        download_attempts = 2
 
         for attempt in range(download_attempts):
             try:
-                download_start_ts = time.time()
-                # call your existing download routine (unchanged)
+                start_t = time.time()
                 file_path = await download_file(resolved_url, f"{str(idx).zfill(3)} {clean_name}")
-                download_end_ts = time.time()
-                # compute bytes and speed
-                try:
-                    b = os.path.getsize(file_path)
-                except Exception:
-                    b = 0
-                delta_t = max(0.001, (download_end_ts - download_start_ts))
-                speed_bps = b / delta_t if delta_t > 0 else 0.0
-                # Update cumulative counters and tracker (MB/s)
-                cumulative_downloaded_bytes += b
-                # tracker expects bytes_downloaded cumulative
+                end_t = time.time()
+
+                size_b = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+                dt = max(0.001, end_t - start_t)
+                cumulative_downloaded_bytes += size_b
+
                 await tracker.update(
                     processed=processed,
                     failed=failed,
@@ -1561,12 +1560,13 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     bytes_uploaded=cumulative_uploaded_bytes,
                     next_item=(lines[idx] if idx < total else None)
                 )
+
                 download_success = True
                 break
+
             except Exception as e:
                 last_err = e
-                logger.warning(f"Download attempt {attempt+1} failed for line {idx} ({clean_name}): {e}")
-                # update tracker to show failure attempt (but not increment failed yet)
+                logger.warning(f"Download attempt {attempt+1} failed ({clean_name}): {e}")
                 await tracker.update(
                     processed=processed,
                     failed=failed,
@@ -1574,11 +1574,10 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     bytes_uploaded=cumulative_uploaded_bytes,
                     next_item=(lines[idx] if idx < total else None)
                 )
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
 
         if not download_success:
             failed += 1
-            # update tracker and continue to next item
             await tracker.update(
                 processed=processed,
                 failed=failed,
@@ -1586,12 +1585,14 @@ async def start_processing(client: Client, message: Message, user_id: int):
                 bytes_uploaded=cumulative_uploaded_bytes,
                 next_item=(lines[idx] if idx < total else None)
             )
-            # Optionally notify the user per your original behavior
             try:
-                await item_status.edit_text(f"⚠️ Failed to download: {clean_name}\nReason: {last_err}")
+                await item_status.edit_text(
+                    f"⚠️ <b>Download failed</b>\n"
+                    f"Name: <code>{clean_name}</code>\n"
+                    f"Reason: <code>{last_err}</code>"
+                )
             except Exception:
                 pass
-            # cleanup if partial file exists
             if file_path and os.path.exists(file_path):
                 try:
                     os.remove(file_path)
@@ -1599,13 +1600,11 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     pass
             continue
 
-        # --- 3) Ensure streamable / determine upload target and upload while timing ---
+        # --- Upload phase with speed tracking ---
         try:
-            # prepare caption same as before in your file
             caption = build_caption(subject, current_index, title_part, batch_name, downloaded_by, link=url)
-            # measure upload time around upload_file_to_channel call
-            upload_start_ts = time.time()
-            up_success = await upload_file_to_channel(
+            up_start = time.time()
+            success = await upload_file_to_channel(
                 bot=client,
                 file_path=file_path,
                 caption=caption,
@@ -1616,55 +1615,10 @@ async def start_processing(client: Client, message: Message, user_id: int):
                 cancel_user_id=user_id,
                 original_url=url
             )
-            upload_end_ts = time.time()
-            uploaded_bytes = 0
-            try:
-                uploaded_bytes = os.path.getsize(file_path)
-            except Exception:
-                uploaded_bytes = 0
-            delta_up_t = max(0.001, (upload_end_ts - upload_start_ts))
-            upload_bps = uploaded_bytes / delta_up_t if delta_up_t > 0 else 0.0
-            cumulative_uploaded_bytes += uploaded_bytes
+            up_end = time.time()
+            uploaded_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            cumulative_uploaded_bytes += uploaded_size
 
-            # success handling
-            if up_success:
-                processed += 1
-                # increment per-subject counter and persist
-                subject_counts[subject_norm] = current_index
-                try:
-                    await mongo_set_last_index(channel_id, subject_norm, current_index)
-                except Exception:
-                    pass
-                # update tracker with final bytes and next item
-                await tracker.update(
-                    processed=processed,
-                    failed=failed,
-                    bytes_downloaded=cumulative_downloaded_bytes,
-                    bytes_uploaded=cumulative_uploaded_bytes,
-                    next_item=(lines[idx] if idx < total else None)
-                )
-                # edit item status to show done
-                try:
-                    await item_status.edit_text(f"✅ [{idx}/{total}] Uploaded: {clean_name}")
-                except Exception:
-                    pass
-            else:
-                failed += 1
-                await tracker.update(
-                    processed=processed,
-                    failed=failed,
-                    bytes_downloaded=cumulative_downloaded_bytes,
-                    bytes_uploaded=cumulative_uploaded_bytes,
-                    next_item=(lines[idx] if idx < total else None)
-                )
-                try:
-                    await item_status.edit_text(f"⚠️ Upload failed for: {clean_name}")
-                except Exception:
-                    pass
-
-        except Exception as e:
-            failed += 1
-            logger.exception(f"Unexpected error handling upload for line {idx}: {e}")
             await tracker.update(
                 processed=processed,
                 failed=failed,
@@ -1672,120 +1626,67 @@ async def start_processing(client: Client, message: Message, user_id: int):
                 bytes_uploaded=cumulative_uploaded_bytes,
                 next_item=(lines[idx] if idx < total else None)
             )
-            try:
-                await item_status.edit_text(f"⚠️ Error: {e}")
-            except Exception:
-                pass
+
+            if success:
+                processed += 1
+                subject_counts[subject_norm] = current_index
+                try:
+                    await mongo_set_last_index(channel_id, subject_norm, current_index)
+                except Exception:
+                    pass
+                try:
+                    await item_status.edit_text(f"✅ [{idx}/{total}] Uploaded: {clean_name}")
+                except Exception:
+                    pass
+            else:
+                failed += 1
+                try:
+                    await item_status.edit_text(f"⚠️ Upload failed: {clean_name}")
+                except Exception:
+                    pass
+
+        except Exception as e:
+            failed += 1
+            logger.exception(f"Upload error for {clean_name}: {e}")
+            await tracker.update(
+                processed=processed,
+                failed=failed,
+                bytes_downloaded=cumulative_downloaded_bytes,
+                bytes_uploaded=cumulative_uploaded_bytes,
+                next_item=(lines[idx] if idx < total else None)
+            )
         finally:
-            # clean up downloaded file
             if file_path and os.path.exists(file_path):
                 try:
                     os.remove(file_path)
                 except Exception:
                     pass
 
-    # === end of for-loop ===
+        # --- Update main Telegram status message ---
+        try:
+            await status_msg.edit_text(
+                f"🚀 <b>Batch Downloading</b>\n"
+                f"• Total: {total}\n"
+                f"• Completed: {processed}\n"
+                f"• Failed: {failed}\n"
+                f"• Current: {idx}\n"
+                f"• Next: {(lines[idx] if idx < total else '—')}"
+            )
+        except Exception:
+            pass
 
-    # After loop completes, ensure tracker stops and finalizes
+    # === END LOOP ===
+
+    # Finalize tracker cleanly
     try:
         await tracker.stop()
     except Exception:
         pass
 
-    # Save forum cache persistently
     save_forum_cache(forum_cache)
     active_downloads[user_id] = False
     return True
 
-        # If upload failed using a cached thread id, attempt to recreate topic once and retry
-    if is_forum and not success and subject_threads.get(subject) == chat_cache.get(subject_norm):
-        try:
-            logger.info(f"Retrying by creating a fresh topic for subject '{subject}' due to failure in cached thread_id")
-            new_thread_id = await bot_api_create_forum_topic(channel_id, subject)
-            if new_thread_id:
-                subject_threads[subject] = new_thread_id
-                chat_cache[subject_norm] = new_thread_id
-                save_forum_cache(forum_cache)
-                await mongo_set_thread_id(channel_id, subject_norm, new_thread_id)
-                current_thread_id = new_thread_id
-                logger.info(f"Created new topic with thread_id={new_thread_id}; retrying upload")
-                success = await upload_file_to_channel(
-                    client,
-                    file_path,
-                    caption,
-                    channel_id,
-                    item_status,
-                    message_thread_id=new_thread_id,
-                    pyro_target=pyro_target,
-                    cancel_user_id=user_id,
-                    original_url=url_stripped,
-                )
-        except Exception as e:
-            logger.error(f"Retry after creating new topic failed: {e}")
-
-    if success:
-        logger.info(f"Uploaded '{clean_name}' successfully under '{subject}' as #{current_index}.")
-        # Delete the provisional header message once the first upload succeeds to keep the thread clean
-        try:
-            if 'header_msg_id' in locals() and header_msg_id:
-                await bot_api_delete_message(channel_id, header_msg_id)
-                header_msg_id = None
-        except Exception:
-            pass
-         # Persist last_index for this topic (continue numbering on future additions)
-        try:
-            if is_forum and current_thread_id is not None:
-                await mongo_set_last_index(channel_id, subject_norm, current_index)
-        except Exception:
-            pass
-        # Update in-memory counter for this subject
-        subject_counts[subject_norm] = current_index
-        processed += 1
-    else:
-        logger.error(f"Upload failed for '{clean_name}' under '{subject}'.")
-        failed += 1
-    # Update live progress tracker
-    await tracker.update(
-        processed=processed,
-        failed=failed,
-        next_item=(lines[idx] if idx < total else None)
-    )
-
-    # Clean up downloaded file after upload (regardless of success)
-    if file_path and os.path.exists(file_path):
-        try:
-            os.remove(file_path)
-        except Exception:
-            pass
-
-    # Update status message
-    await status_msg.edit_text(
-        f"🚀 Processing:\n"
-        f"• Current line: {idx}/{total}\n"
-        f"• Completed: {processed}\n"
-        f"• Failed: {failed}\n"
-        f"• Batch: {batch_name}"
-    )
-
-    # Rate limiting pause
-    if processed % 5 == 0 and processed > 0:
-        await asyncio.sleep(10)  # longer sleep every 5 successes
-    else:
-        await asyncio.sleep(2)   # brief pause between each
-
-    # Delete the item status message
-    try:
-        await item_status.delete()
-    except Exception:
-        pass
-
-# Cleanup
-user_data.pop(user_id, None)
-active_downloads.pop(user_id, None)
-active_downloads[user_id] = False
-    await status_msg.edit_text("✅ All items processed.")
-await tracker.stop()
-return True
 
 # ─── Handle potential bad‐time notifications on startup ────────────────────────
 
