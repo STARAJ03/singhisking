@@ -1396,9 +1396,10 @@ async def start_processing(client: Client, message: Message, user_id: int):
         f"• Channel: {channel_id}\n"
         f"• Downloaded by: {downloaded_by}\n\n"
         f"Completed: 0 / {total}"
-        tracker = ProgressTracker(client, status_msg, total)
-        await tracker.start()
     )
+    # ✅ Start live progress tracker
+    tracker = ProgressTracker(client, status_msg, total)
+    await tracker.start()
 
     processed = 0
     failed = 0
