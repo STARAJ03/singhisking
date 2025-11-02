@@ -23,11 +23,13 @@ def human_readable_size(size):
     else:
         return f"{size / (1024 ** 3):.2f} GB"
 
+
 def progress_bar(percentage):
     """Return a simple progress bar string"""
     filled = int(BAR_LENGTH * percentage / 100)
     empty = BAR_LENGTH - filled
     return f"[{'█' * filled}{'░' * empty}]"
+
 
 def speed_in_mbps(bytes_done, elapsed_time):
     if elapsed_time <= 0:
@@ -36,33 +38,31 @@ def speed_in_mbps(bytes_done, elapsed_time):
 
 
 # ────────────────────────────────
-# 🚀 Main Progress Handler
+# 🚀 Main Progress Handler (works for Pyrogram + manual)
 # ────────────────────────────────
 async def progress_callback(
-    current_bytes,
-    total_bytes,
-    message,
-    start_time,
-    file_name,
-    index,
-    total_files,
-    next_name=None,
-    phase="Downloading"
+    current, total, message, start_time, file_name, index, total_files, next_name=None, phase="Uploading"
 ):
     """Update a single Telegram message with download/upload progress"""
+
+    # Rename to more descriptive vars
+    current_bytes = current
+    total_bytes = total
+
     now = time.time()
     elapsed = now - start_time
+
     percent = (current_bytes / total_bytes) * 100 if total_bytes else 0
     speed = speed_in_mbps(current_bytes, elapsed)
     done = human_readable_size(current_bytes)
-    total = human_readable_size(total_bytes)
+    total_hr = human_readable_size(total_bytes)
     eta = (total_bytes - current_bytes) / (speed * 1024 * 1024) if speed > 0 else 0
 
     # Build progress text
     progress_text = (
         f"📦 **{phase} File:** {file_name}\n"
         f"📊 **Progress:** {progress_bar(percent)} `{percent:.1f}%`\n"
-        f"📁 **Size:** {done} / {total}\n"
+        f"📁 **Size:** {done} / {total_hr}\n"
         f"⚡ **Speed:** {speed:.2f} MB/s\n"
         f"⏱️ **ETA:** {int(eta)}s\n"
         f"📂 **Queue:** {index}/{total_files}\n"
@@ -78,7 +78,7 @@ async def progress_callback(
 
 
 # ────────────────────────────────
-# 🧵 Stream Tracker for aiohttp or uploads
+# 🧵 Stream Tracker for aiohttp or manual file writes
 # ────────────────────────────────
 async def track_progress(
     message,
