@@ -834,32 +834,58 @@ async def download_file(url: str, filename: str) -> str:
     ytdlp_hosts = ("youtube.com", "youtu.be", "vimeo.com", "facebook.com", "dailymotion.com", "drive.google.com")
     is_ytdlp = any(h in url_lower for h in ytdlp_hosts) and not url_lower.endswith(".pdf")
 
-    # --- NEW: Handle .m3u8 (HLS) links using ffmpeg ---
+        # --- UPDATED: Handle .m3u8 (HLS) links using ffmpeg ---
     if url_lower.endswith(".m3u8") or ".m3u8?" in url_lower:
         out_name = f"downloads/{filename}.mp4"
         try:
+            # Probe for available resolutions using ffprobe
+            cmd_probe = [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v",
+                "-show_entries", "stream=height",
+                "-of", "csv=p=0", url
+            ]
+            proc_probe = await asyncio.create_subprocess_exec(
+                *cmd_probe,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await proc_probe.communicate()
+            heights = [int(h) for h in stdout.decode().split() if h.isdigit()]
+            target_res = max([h for h in heights if h <= 720], default=(min(heights) if heights else 720))
+
+            # Add safe headers to avoid blocking by some CDNs
+            headers = "User-Agent: Mozilla/5.0\r\nReferer: https://google.com\r\n"
             cmd = [
-                "ffmpeg", "-y", "-i", url,
+                "ffmpeg", "-y",
+                "-headers", headers,
+                "-i", url,
+                "-map", "0:v:0", "-map", "0:a?",
                 "-c", "copy",
                 "-bsf:a", "aac_adtstoasc",
+                "-vf", f"scale=-2:{target_res}",
                 out_name
             ]
+
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            await proc.communicate()
-            if proc.returncode == 0 and os.path.exists(out_name) and os.path.getsize(out_name) > 0:
+            stdout, stderr = await proc.communicate()
+            err_text = stderr.decode(errors="ignore")
+
+            if proc.returncode == 0 and os.path.exists(out_name) and os.path.getsize(out_name) > 1024 * 1024:
                 try:
                     await remux_faststart_async(out_name)
                 except Exception:
                     pass
                 return out_name
             else:
-                raise Exception("ffmpeg HLS download failed or empty file")
+                raise Exception(f"ffmpeg failed or empty file.\n{err_text[-500:]}")
         except Exception as e:
             raise Exception(f"HLS (.m3u8) download failed: {e}")
+
 
     # If URL is obviously a direct link and not a streaming page, do HTTP streaming
     if try_http_first and not is_ytdlp:
