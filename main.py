@@ -815,14 +815,10 @@ async def download_file(url: str, filename: str) -> str:
     Replaces appxdl usage:
     - If the URL looks like a YouTube or other streaming page, uses yt-dlp.
     - Otherwise attempts a direct HTTP(S) stream using aiohttp.
-    - Adds ffmpeg-based support for .m3u8 HLS streams.
+    - Adds robust ffmpeg-based support for .m3u8 (HLS) including pre-signing
+      for Classplus/Testbook/Cloudfront and VisionIAS scraping.
     Returns the path to the downloaded file, or raises Exception on failure.
     """
-    resolved = await resolve_url(url1, name=filename, raw_text2=raw_text2_variable_if_you_have_it)
-    # use resolved["url"] instead of url for ffmpeg/yt-dlp
-    url1 = resolved.get("url", url)
-    # optionally use resolved["cmd"] if you want to run yt-dlp directly
-
     url = url.strip()
     url_lower = url.lower()
     # create downloads directory if not exists
@@ -841,39 +837,98 @@ async def download_file(url: str, filename: str) -> str:
     ytdlp_hosts = ("youtube.com", "youtu.be", "vimeo.com", "facebook.com", "dailymotion.com", "drive.google.com")
     is_ytdlp = any(h in url_lower for h in ytdlp_hosts) and not url_lower.endswith(".pdf")
 
-        # --- UPDATED: Handle .m3u8 (HLS) links using ffmpeg ---
-        # --- UPDATED: Handle protected .m3u8 (HLS) links with pre-signing and ffmpeg ---
+    # BEFORE anything: try to resolve protected/DRM links via your existing globals pre-signs
+    # (this mirrors the signing behavior from your working uploader)
+    try:
+        # import globals if available and try to pre-sign classplus / cloudfront style URLs
+        try:
+            import globals as __globals_mod  # already in repo
+            __cptoken = getattr(__globals_mod, "cptoken", None)
+        except Exception:
+            __cptoken = None
+
+        # If it looks like Classplus/Testbook/Cloudfront style, call the jw-signed-url API
+        if any(x in url_lower for x in [
+            "classplusapp.com", "media-cdn", "tencdn", "cpvod", "cloudfront.net", "videos.classplusapp"
+        ]) and __cptoken:
+            try:
+                headers = {
+                    'x-access-token': __cptoken,
+                    'accept-language': 'EN',
+                    'api-version': '18',
+                    'user-agent': 'Mobile-Android',
+                }
+                params = {"url": url}
+                r = requests.get('https://api.classplusapp.com/cams/uploader/video/jw-signed-url', headers=headers, params=params, timeout=12)
+                if r.ok:
+                    data = r.json()
+                    if "url" in data and data.get("url"):
+                        url = data["url"]
+                        url_lower = url.lower()
+                        logger.info(f"Pre-signed protected URL for download: {url}")
+            except Exception as e:
+                logger.warning(f"Pre-sign attempt failed (will continue): {e}")
+    except Exception:
+        # don't crash if pre-sign helper is missing
+        pass
+
+    # --- UPDATED: Handle protected .m3u8 (HLS) links with pre-signing and ffmpeg ---
     if url_lower.endswith(".m3u8") or ".m3u8?" in url_lower:
         out_name = f"downloads/{filename}.mp4"
         try:
-            import requests
-
-            # --- Step 1: Try to pre-sign Classplus / Cloudfront URLs ---
-            if any(x in url_lower for x in [
-                "classplusapp.com", "media-cdn", "tencdn", "cpvod", "cloudfront.net"
-            ]):
+            # If VisionIAS page, try to scrape the actual m3u8
+            if "visionias" in url_lower:
                 try:
-                    headers = {
-                        'x-access-token': CPTOKEN or "",
-                        'accept-language': 'EN',
-                        'api-version': '18',
-                        'user-agent': 'Mobile-Android',
-                    }
-                    params = {"url": url}
-                    r = requests.get(
-                        'https://api.classplusapp.com/cams/uploader/video/jw-signed-url',
-                        headers=headers, params=params, timeout=10
-                    )
-                    if r.ok and "url" in r.json():
-                        old_url = url
-                        url = r.json()["url"]
-                        logger.info(f"Replaced protected HLS URL:\n{old_url}\n→ {url}")
-                    else:
-                        logger.warning(f"Classplus API returned: {r.text}")
+                    async with aiohttp.ClientSession() as session:
+                        vheaders = {
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.9',
+                            'Cache-Control': 'no-cache',
+                            'Connection': 'keep-alive',
+                            'Pragma': 'no-cache',
+                            'Referer': 'http://www.visionias.in/',
+                            'User-Agent': 'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36',
+                        }
+                        async with session.get(url, headers=vheaders, timeout=15) as resp:
+                            text = await resp.text()
+                            m = re.search(r'(https://.*?playlist\.m3u8.*?)"', text)
+                            if m:
+                                url = m.group(1)
+                                url_lower = url.lower()
+                                logger.info(f"VisionIAS playlist resolved: {url}")
                 except Exception as e:
-                    logger.warning(f"Classplus pre-signing failed: {e}")
+                    logger.warning(f"VisionIAS playlist scrape failed: {e}")
 
-            # --- Step 2: Probe resolutions (pick ≤720p if available) ---
+            # If still looks like protected cloudfront/classplus, attempt to call classplus signing again (safe)
+            try:
+                if any(x in url_lower for x in ["classplusapp.com", "media-cdn", "tencdn", "cpvod", "cloudfront.net"]):
+                    try:
+                        __cpt = None
+                        try:
+                            import globals as __g
+                            __cpt = getattr(__g, "cptoken", None) or getattr(__g, "cptoken", None) or getattr(__g, "cptoken", None)
+                        except Exception:
+                            __cpt = getattr(__globals_mod, "cptoken", None) if '__globals_mod' in locals() else None
+                        if __cpt:
+                            headers = {
+                                'x-access-token': __cpt,
+                                'accept-language': 'EN',
+                                'api-version': '18',
+                                'user-agent': 'Mobile-Android',
+                            }
+                            params = {"url": url}
+                            r = requests.get('https://api.classplusapp.com/cams/uploader/video/jw-signed-url', headers=headers, params=params, timeout=12)
+                            if r.ok and "url" in r.json():
+                                data = r.json()
+                                url = data.get("url", url)
+                                url_lower = url.lower()
+                                logger.info(f"Re-signed protected HLS URL: {url}")
+                    except Exception as e:
+                        logger.warning(f"classplus pre-sign attempt inside m3u8 block failed: {e}")
+            except Exception:
+                pass
+
+            # Probe for available resolutions using ffprobe
             cmd_probe = [
                 "ffprobe", "-v", "error",
                 "-select_streams", "v",
@@ -887,14 +942,21 @@ async def download_file(url: str, filename: str) -> str:
             )
             stdout, _ = await proc_probe.communicate()
             heights = [int(h) for h in stdout.decode().split() if h.isdigit()]
-            target_res = max([h for h in heights if h <= 720], default=(min(heights) if heights else 720))
+            # choose highest <= 720, else lowest available or fallback 720
+            target_res = 720
+            if heights:
+                leq = [h for h in heights if h <= 720]
+                if leq:
+                    target_res = max(leq)
+                else:
+                    target_res = min(heights)
 
-            # --- Step 3: Build ffmpeg command safely ---
+            # Build ffmpeg command safely. Use -user_agent / -referer which ffmpeg accepts.
             cmd = [
                 "ffmpeg", "-y",
                 "-user_agent", "Mozilla/5.0",
                 "-referer", "https://google.com",
-                "-i", f"{url}",
+                "-i", url,
                 "-map", "0:v:0", "-map", "0:a?",
                 "-c", "copy",
                 "-bsf:a", "aac_adtstoasc",
@@ -912,7 +974,7 @@ async def download_file(url: str, filename: str) -> str:
             _, stderr = await proc.communicate()
             err_text = stderr.decode(errors="ignore")
 
-            # --- Step 4: Validate output ---
+            # Validate output size (>=1MB) as quick heuristic
             if proc.returncode == 0 and os.path.exists(out_name) and os.path.getsize(out_name) > 1024 * 1024:
                 try:
                     await remux_faststart_async(out_name)
@@ -920,12 +982,10 @@ async def download_file(url: str, filename: str) -> str:
                     pass
                 return out_name
             else:
-                raise Exception(f"ffmpeg failed or empty file.\n{err_text[-500:]}")
-
+                raise Exception(f"ffmpeg failed or produced empty file.\n{err_text[-500:]}")
         except Exception as e:
+            # Re-raise with clear message
             raise Exception(f"HLS (.m3u8) download failed: {e}")
-
-
 
     # If URL is obviously a direct link and not a streaming page, do HTTP streaming
     if try_http_first and not is_ytdlp:
