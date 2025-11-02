@@ -1795,6 +1795,9 @@ async def start_processing(client: Client, message: Message, user_id: int):
                 pyro_target=pyro_target,
                 cancel_user_id=user_id,
                 original_url=url_stripped,
+                index=i + 1,
+                total_files=len(urls),
+                next_name=urls[i + 1]["title"] if i + 1 < len(urls) else None
             )
             if is_forum:
                 logger.info(f"Uploaded to thread_id={current_thread_id} for subject='{subject}'")
