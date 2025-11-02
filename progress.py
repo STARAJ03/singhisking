@@ -86,6 +86,14 @@ async def progress_callback(
     except Exception:
         pass
 
+    # ✅ Auto-delete progress message when complete
+    if percent >= 100:
+        await asyncio.sleep(2)  # small delay to show 100%
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
 
 # ────────────────────────────────
 # 🧵 Stream Tracker for aiohttp or manual file writes
@@ -132,13 +140,3 @@ async def track_progress(
         file_name,
         phase
     )
-
-    # ✅ Auto-delete progress message when complete
-    if percent >= 100:
-        await asyncio.sleep(2)  # short delay so user can see 100%
-        try:
-            await message.delete()
-        except Exception:
-            pass
-
-
