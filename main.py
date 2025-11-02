@@ -23,13 +23,11 @@ import asyncio
 import time
 import shutil
 import asyncio
-import requests
-from progress_tracker import ProgressTracker
+
 from pyrogram import Client, filters, idle
 from pyrogram.errors import FloodWait, RPCError, BadMsgNotification, MessageNotModified
 from pyrogram.types import Message
 from typing import Dict, List, Optional
-from logic_resolver import resolve_url
 
 # NEW imports for async HTTP downloads and youtube support
 import aiohttp
@@ -810,19 +808,44 @@ def _ydl_download_blocking(url: str, out_template: str) -> str:
         # if the file does not end with .mp4, rename to .mp4 if the ext is different but mp4 container used
         return filename
 
+# Download detetction
 async def download_file(url: str, filename: str) -> str:
     """
-    Replaces appxdl usage:
-    - If the URL looks like a YouTube or other streaming page, uses yt-dlp.
-    - Otherwise attempts a direct HTTP(S) stream using aiohttp.
-    - Adds robust ffmpeg-based support for .m3u8 (HLS) including pre-signing
-      for Classplus/Testbook/Cloudfront and VisionIAS scraping.
-    Returns the path to the downloaded file, or raises Exception on failure.
+    Unified downloader:
+    - .m3u8 handled via ffmpeg
+    - YouTube etc via yt-dlp
+    - Direct links via aiohttp
     """
     url = url.strip()
     url_lower = url.lower()
-    # create downloads directory if not exists
     os.makedirs("downloads", exist_ok=True)
+
+    # 🔹 Add this detection
+    if ".m3u8" in url_lower:
+        out_name = f"downloads/{filename}.mp4"
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-referer", "https://www.google.com/",
+            "-user_agent", "Mozilla/5.0",
+            "-i", url,
+            "-c", "copy",
+            "-y",
+            out_name
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0 or not os.path.exists(out_name):
+            raise Exception(f"FFmpeg failed: {stderr.decode().strip()}")
+        # Make it streamable
+        await remux_faststart_async(out_name)
+        return out_name
+
 
     # Decide target extension
     if ".pdf" in url_lower:
@@ -836,81 +859,6 @@ async def download_file(url: str, filename: str) -> str:
     # Heuristic: treat youtube/youtu.be and many known hosts as ytdlp candidates
     ytdlp_hosts = ("youtube.com", "youtu.be", "vimeo.com", "facebook.com", "dailymotion.com", "drive.google.com")
     is_ytdlp = any(h in url_lower for h in ytdlp_hosts) and not url_lower.endswith(".pdf")
-
-    # BEFORE anything: try to resolve protected/DRM links via your existing globals pre-signs
-    # (this mirrors the signing behavior from your working uploader)
-    try:
-        # import globals if available and try to pre-sign classplus / cloudfront style URLs
-        try:
-            import globals as __globals_mod  # already in repo
-            __cptoken = getattr(__globals_mod, "cptoken", None)
-        except Exception:
-            __cptoken = None
-
-        # If it looks like Classplus/Testbook/Cloudfront style, call the jw-signed-url API
-        if any(x in url_lower for x in [
-            "classplusapp.com", "media-cdn", "tencdn", "cpvod", "cloudfront.net", "videos.classplusapp"
-        ]) and __cptoken:
-            try:
-                headers = {
-                    'x-access-token': __cptoken,
-                    'accept-language': 'EN',
-                    'api-version': '18',
-                    'user-agent': 'Mobile-Android',
-                }
-                params = {"url": url}
-                r = requests.get('https://api.classplusapp.com/cams/uploader/video/jw-signed-url', headers=headers, params=params, timeout=12)
-                if r.ok:
-                    data = r.json()
-                    if "url" in data and data.get("url"):
-                        url = data["url"]
-                        url_lower = url.lower()
-                        logger.info(f"Pre-signed protected URL for download: {url}")
-            except Exception as e:
-                logger.warning(f"Pre-sign attempt failed (will continue): {e}")
-    except Exception:
-        # don't crash if pre-sign helper is missing
-        pass
-
-        # --- Handle HLS (.m3u8) streams separately ---
-    if url_lower.endswith(".m3u8") or ".m3u8?" in url_lower:
-        try:
-            # Resolve / pre-sign the m3u8 URL first using your logic_resolver helper
-            from logic_resolver import resolve_url
-            resolved = await resolve_url(url)
-            signed_url = resolved.get("url", url)
-
-            # Build output name
-            out_name = f"downloads/{filename}.mp4"
-
-            # Try ffmpeg direct download at 720p (if multiple variants)
-            ffmpeg_cmd = [
-                "ffmpeg", "-y", "-loglevel", "error",
-                "-i", signed_url,
-                "-c", "copy", "-bsf:a", "aac_adtstoasc",
-                out_name
-            ]
-            proc = await asyncio.create_subprocess_exec(
-                *ffmpeg_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            _, stderr = await proc.communicate()
-
-            # Check if file exists and not empty
-            if os.path.exists(out_name) and os.path.getsize(out_name) > 1024 * 100:
-                # move moov atom to start for instant playback
-                try:
-                    await remux_faststart_async(out_name)
-                except Exception:
-                    pass
-                return out_name
-            else:
-                raise Exception(f"ffmpeg failed or empty file: {stderr.decode() if stderr else ''}")
-
-        except Exception as e:
-            raise Exception(f"HLS (.m3u8) download failed: {e}")
-
 
     # If URL is obviously a direct link and not a streaming page, do HTTP streaming
     if try_http_first and not is_ytdlp:
@@ -964,7 +912,6 @@ async def download_file(url: str, filename: str) -> str:
         except Exception as e:
             # If both HTTP and yt-dlp fail, raise a clear exception
             raise Exception(f"Download failed for {url}: {e}")
-
 
 # ... rest of your original code continues unchanged ...
 
@@ -1448,9 +1395,6 @@ async def start_processing(client: Client, message: Message, user_id: int):
         f"• Downloaded by: {downloaded_by}\n\n"
         f"Completed: 0 / {total}"
     )
-    # ✅ Start live progress tracker
-    tracker = ProgressTracker(client, status_msg, total)
-    await tracker.start()
 
     processed = 0
     failed = 0
@@ -1461,59 +1405,32 @@ async def start_processing(client: Client, message: Message, user_id: int):
 
     # When start_idx == 0 (auto-numbering), iterate from the first line
     iter_start_line = start_idx if (start_idx and start_idx > 0) else 1
-        # === REPLACE the for-loop with this block ===
-    # cumulative bytes counters for tracker speed calc
-    cumulative_downloaded_bytes = 0
-    cumulative_uploaded_bytes = 0
-
-        # === UPDATED PROGRESS + DOWNLOAD LOOP ===
-    # Label the message for the batch downloading session
-    try:
-        await status_msg.edit_text(
-            f"🚀 <b>Batch Downloading</b>\n"
-            f"• Start line: <code>{start_idx}</code>\n"
-            f"• Total items: <b>{total}</b>\n"
-            f"• Batch name: <code>{batch_name}</code>\n"
-            f"• Channel: <code>{channel_id}</code>\n"
-            f"• Downloaded by: <code>{downloaded_by}</code>\n\n"
-            f"Progress: 0 / {total}"
-        )
-    except Exception:
-        pass
-
-    cumulative_downloaded_bytes = 0
-    cumulative_uploaded_bytes = 0
-
     for idx, entry in enumerate(lines[iter_start_line - 1:], start=iter_start_line):
-
-        # Stop if user requested cancellation
+        # Check if a stop was requested
         if not active_downloads.get(user_id, False):
             try:
-                await status_msg.edit_text("⏹️ Download stopped by user.")
+                await message.reply_text("⏹️ Stopped by user.")
             except Exception:
                 pass
+            # Ensure flag cleared and report early stop
             active_downloads[user_id] = False
             return False
+        if not active_downloads.get(user_id, True):
+            logger.info(f"Process stopped by user {user_id} at line {idx}")
+            break
 
+        # Each line is "[Subject] Title:URL"
         if ":" not in entry:
             logger.warning(f"Skipping invalid line {idx}: {entry}")
             failed += 1
-            await tracker.update(
-                processed=processed,
-                failed=failed,
-                bytes_downloaded=cumulative_downloaded_bytes,
-                bytes_uploaded=cumulative_uploaded_bytes,
-                next_item=(lines[idx] if idx < total else None)
-            )
             continue
 
         title_part, url = entry.split(":", 1)
         subjects = extract_subjects(title_part)
-        subject = subjects[0]
+        subject = subjects[0]  # We only take the first subject in the list
         subject_norm = _normalize_subject(subject)
         clean_name = clean_title(title_part)
-
-        # initialize numbering for subject if needed
+        # Initialize per-topic count on first encounter this run
         if subject_norm not in subject_counts:
             if auto_numbering:
                 try:
@@ -1524,169 +1441,335 @@ async def start_processing(client: Client, message: Message, user_id: int):
             else:
                 subject_counts[subject_norm] = int(start_idx) - 1
 
-        # your existing subject/forum header creation logic remains here unchanged
+        # If subject changed from last_subject
+        if subject != last_subject:
+            if is_forum:
+                # Create or reuse a forum topic per subject
+                try:
+                    thread_id = subject_threads.get(subject)
+                    if thread_id is None:
+                        # Try DB first
+                        db_thread = await mongo_get_thread_id(channel_id, subject_norm)
+                        if isinstance(db_thread, int):
+                            thread_id = db_thread
+                            logger.info(f"Reusing DB forum topic '{subject}' with thread_id={thread_id}")
+                        # Then local cache
+                        if not thread_id:
+                            cached = chat_cache.get(subject_norm)
+                            if isinstance(cached, int):
+                                thread_id = cached
+                                logger.info(f"Reusing cached forum topic '{subject}' with thread_id={thread_id}")
+                        # If not in cache, create the topic via Bot API (works on Koyeb)
+                        if not thread_id:
+                            thread_id = await bot_api_create_forum_topic(channel_id, subject)
+                        if not thread_id:
+                            raise Exception("Could not determine message_thread_id for created topic")
+                        subject_threads[subject] = thread_id
+                        # Update persistent cache and log
+                        chat_cache[subject_norm] = thread_id
+                        save_forum_cache(forum_cache)
+                        await mongo_set_thread_id(channel_id, subject_norm, thread_id)
+                        # Initialize numbering for new topic
+                        try:
+                            await mongo_set_last_index(channel_id, subject_norm, 0)
+                            video_count = 0
+                        except Exception:
+                            pass
+                        logger.info(f"Created forum topic '{subject}' with thread_id={thread_id}")
+                        # Small delay to allow thread to become available
+                        await asyncio.sleep(3)
+                        # Touch the thread with a subject header to confirm availability (retry to avoid race)
+                        header_sent = False
+                        header_msg_id = None
+                        for _r in range(8):
+                            try:
+                                header_msg_id = await bot_api_send_message(channel_id, thread_id=thread_id, text=f"{subject}")
+                                header_sent = True
+                                break
+                            except Exception as e:
+                                if _r == 7:
+                                    logger.warning(f"Failed to send subject header in new thread {thread_id}: {e}")
+                                    break
+                                await asyncio.sleep(1.0)
+                    else:
+                        logger.info(f"Reusing forum topic '{subject}' with thread_id={thread_id}")
+                    current_thread_id = thread_id
+                    last_subject = subject
+                    # If header wasn't confirmed, give the thread a tiny bit more time before the first upload
+                    try:
+                        if not locals().get('header_sent', True):
+                            await asyncio.sleep(2)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(1)
+                except FloodWait as e:
+                    logger.warning(f"FloodWait while creating topic: sleeping for {e.value}s")
+                    await asyncio.sleep(e.value)
+                except RPCError as e:
+                    logger.error(f"Failed to create/use forum topic for '{subject}': {e}")
+                    is_forum = False
+                    current_thread_id = None
+                except Exception as e:
+                    logger.error(f"Unexpected error creating forum topic for '{subject}': {e}")
+                    is_forum = False
+                    current_thread_id = None
+            else:
+                # Attempt to reuse an existing topic via DB/cache, else create via Bot API
+                try:
+                    reuse_thread = await mongo_get_thread_id(channel_id, subject_norm)
+                    if not reuse_thread:
+                        reuse_thread = chat_cache.get(subject_norm)
+                    if isinstance(reuse_thread, int):
+                        current_thread_id = reuse_thread
+                        subject_threads[subject] = reuse_thread
+                        last_subject = subject
+                        is_forum = True
+                        logger.info(f"Reusing cached/DB forum topic '{subject}' with thread_id={reuse_thread} (detection previously false)")
+                        await asyncio.sleep(1)
+                        try:
+                            await bot_api_send_message(channel_id, thread_id=reuse_thread, text=f"{subject}")
+                        except Exception as e:
+                            logger.warning(f"Failed to send subject header in new thread {reuse_thread}: {e}")
+                    else:
+                        provisional_thread = await bot_api_create_forum_topic(channel_id, subject)
+                        if provisional_thread:
+                            logger.info(f"Created forum topic '{subject}' with thread_id={provisional_thread} (detection previously false)")
+                            subject_threads[subject] = provisional_thread
+                            chat_cache[subject_norm] = provisional_thread
+                            save_forum_cache(forum_cache)
+                            await mongo_set_thread_id(channel_id, subject_norm, provisional_thread)
+                            # Initialize numbering for new topic (detection previously false)
+                            try:
+                                await mongo_set_last_index(channel_id, subject_norm, 0)
+                                video_count = 0
+                            except Exception:
+                                pass
+                            current_thread_id = provisional_thread
+                            last_subject = subject
+                            is_forum = True
+                            # Small delay to allow thread to become available
+                            await asyncio.sleep(3)
+                            # Touch the thread with a subject header (retry to avoid race)
+                            header_sent = False
+                            header_msg_id = None
+                            for _r in range(8):
+                                try:
+                                    header_msg_id = await bot_api_send_message(channel_id, thread_id=provisional_thread, text=f"{subject}")
+                                    header_sent = True
+                                    break
+                                except Exception as e:
+                                    if _r == 7:
+                                        logger.warning(f"Failed to send subject header in new thread {provisional_thread}: {e}")
+                                        break
+                                    await asyncio.sleep(1.0)
+                            # If header wasn't confirmed, give the thread a tiny bit more time before the first upload
+                            try:
+                                if not header_sent:
+                                    await asyncio.sleep(2)
+                            except Exception:
+                                pass
+                            await asyncio.sleep(1)
+                        else:
+                            raise Exception("No thread id returned")
+                except Exception as e:
+                    # Non-forum: send a subject header message using Bot API
+                    try:
+                        await asyncio.sleep(0)  # yield
+                        await bot_api_send_message(channel_id, thread_id=0, text=f"📌 {subject}")
+                        last_subject = subject
+                        current_thread_id = None
+                        await asyncio.sleep(1)
+                    except Exception as e2:
+                        logger.error(f"Failed to send subject header via Bot API: {e2}")
 
+        # Determine current index for this subject
         current_index = subject_counts[subject_norm] + 1
 
-        # --- Resolve link (handles DRM/m3u8 signing) ---
-        try:
-            from logic_resolver import resolve_url
-            resolved = await resolve_url(url, name=clean_name, raw_text2="720")
-            resolved_url = resolved.get("url") or url
-        except Exception as e:
-            logger.warning(f"Resolver failed for {idx}: {e}")
-            resolved_url = url
-
-        # --- Download phase with speed measurement ---
+        # Download the file with retry logic
+        item_status = await message.reply_text(f"⬇️ [{idx}/{total}] Downloading: {clean_name}")
         file_path = None
         download_success = False
-        last_err = None
-        download_attempts = 2
-
-        for attempt in range(download_attempts):
+        
+        # Try downloading twice
+        for attempt in range(2):
             try:
-                start_t = time.time()
-                file_path = await download_file(resolved_url, f"{str(idx).zfill(3)} {clean_name}")
-                end_t = time.time()
+                url_stripped = url.strip().split()[0]
+                url_lower = url_stripped.lower()
 
-                size_b = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-                dt = max(0.001, end_t - start_t)
-                cumulative_downloaded_bytes += size_b
+                # 🔹 Detect file types
+                is_pdf = (".pdf" in url_lower)
+                is_m3u8 = (".m3u8" in url_lower)
 
-                await tracker.update(
-                    processed=processed,
-                    failed=failed,
-                    bytes_downloaded=cumulative_downloaded_bytes,
-                    bytes_uploaded=cumulative_uploaded_bytes,
-                    next_item=(lines[idx] if idx < total else None)
-                )
+                # Choose a safe base filename
+                if is_pdf:
+                    base_name = select_pdf_filename(title_part)
+                else:
+                    base_name = clean_name
+
+                # 🔹 Call unified downloader — handles m3u8 internally
+                file_path = await download_file(url_stripped, base_name)
 
                 download_success = True
                 break
-
+            
             except Exception as e:
-                last_err = e
-                logger.warning(f"Download attempt {attempt+1} failed ({clean_name}): {e}")
-                await tracker.update(
-                    processed=processed,
-                    failed=failed,
-                    bytes_downloaded=cumulative_downloaded_bytes,
-                    bytes_uploaded=cumulative_uploaded_bytes,
-                    next_item=(lines[idx] if idx < total else None)
-                )
-                await asyncio.sleep(2)
+                logger.error(f"Download attempt {attempt + 1} failed for line {idx} ({clean_name}): {e}")
+                if attempt == 0:  # First attempt failed, try again
+                    await item_status.edit_text(f"⚠️ [{idx}/{total}] Download failed, retrying: {clean_name}")
+                    await asyncio.sleep(2)  # Wait before retry
+                else:  # Second attempt failed
+                    await item_status.edit_text(f"❌ [{idx}/{total}] Download failed after retry: {clean_name}")
+                    failed += 1
 
         if not download_success:
-            failed += 1
-            await tracker.update(
-                processed=processed,
-                failed=failed,
-                bytes_downloaded=cumulative_downloaded_bytes,
-                bytes_uploaded=cumulative_uploaded_bytes,
-                next_item=(lines[idx] if idx < total else None)
-            )
+            # Fallback: send the styled caption with the original link into the topic/chat
             try:
-                await item_status.edit_text(
-                    f"⚠️ <b>Download failed</b>\n"
-                    f"Name: <code>{clean_name}</code>\n"
-                    f"Reason: <code>{last_err}</code>"
+                fallback_caption = build_caption(
+                    subject,
+                    idx,
+                    title_part,
+                    batch_name,
+                    downloaded_by,
+                    link=url_stripped,
                 )
-            except Exception:
-                pass
-            if file_path and os.path.exists(file_path):
+                if is_forum and current_thread_id is not None:
+                    await bot_api_send_message(channel_id, thread_id=current_thread_id, text=fallback_caption)
+                else:
+                    await bot_api_send_message(channel_id, thread_id=0, text=fallback_caption)
+            except Exception as e:
+                logger.error(f"Failed to send fallback link message for line {idx}: {e}")
+            # Move to next item
+            continue
+            # If it's a YouTube or streaming link, send the URL instead
+            if any(x in url.lower() for x in ["youtube.com", "youtu.be", "vimeo.com", "facebook.com", "dailymotion.com"]):
                 try:
-                    os.remove(file_path)
+                    display_title = re.sub(r"\[[^\]]+\]\s*", "", title_part).strip()
+                    caption_link = build_caption(subject, video_count, display_title, batch_name, downloaded_by, link=url.strip())
+                    await client.send_message(
+                        chat_id=channel_id,
+                        text=caption_link,
+                        message_thread_id=current_thread_id if is_forum else None,
+                        disable_web_page_preview=False,
+                        reply_to_message_id=None
+                    )
+                    if is_forum:
+                        logger.info(f"Posted fallback link in thread_id={current_thread_id}")
+                    logger.info(f"Sent fallback YouTube link for {clean_name}")
+                except Exception as e:
+                    logger.error(f"Failed to send YouTube fallback link for {clean_name}: {e}")
+            else:
+                try:
+                    await item_status.edit_text(f"❌ [{idx}/{total}] Download failed for {clean_name}")
                 except Exception:
                     pass
+            failed += 1
             continue
 
-        # --- Upload phase with speed tracking ---
+        # Upload under this subject with styled caption
+        display_title = re.sub(r"\[[^\]]+\]\s*", "", title_part).strip()
+        caption = build_caption(subject, current_index, display_title, batch_name, downloaded_by)
+        await item_status.edit_text(f"📤 [{idx}/{total}] Uploading: {clean_name}")
+        success = False
         try:
-            caption = build_caption(subject, current_index, title_part, batch_name, downloaded_by, link=url)
-            up_start = time.time()
             success = await upload_file_to_channel(
-                bot=client,
-                file_path=file_path,
-                caption=caption,
-                channel_id=channel_id,
-                status_msg=status_msg,
-                message_thread_id=current_thread_id,
+                client,
+                file_path,
+                caption,
+                channel_id,
+                item_status,
+                message_thread_id=current_thread_id if is_forum else None,
                 pyro_target=pyro_target,
                 cancel_user_id=user_id,
-                original_url=url
+                original_url=url_stripped,
             )
-            up_end = time.time()
-            uploaded_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-            cumulative_uploaded_bytes += uploaded_size
-
-            await tracker.update(
-                processed=processed,
-                failed=failed,
-                bytes_downloaded=cumulative_downloaded_bytes,
-                bytes_uploaded=cumulative_uploaded_bytes,
-                next_item=(lines[idx] if idx < total else None)
-            )
-
-            if success:
-                processed += 1
-                subject_counts[subject_norm] = current_index
-                try:
-                    await mongo_set_last_index(channel_id, subject_norm, current_index)
-                except Exception:
-                    pass
-                try:
-                    await item_status.edit_text(f"✅ [{idx}/{total}] Uploaded: {clean_name}")
-                except Exception:
-                    pass
-            else:
-                failed += 1
-                try:
-                    await item_status.edit_text(f"⚠️ Upload failed: {clean_name}")
-                except Exception:
-                    pass
-
+            if is_forum:
+                logger.info(f"Uploaded to thread_id={current_thread_id} for subject='{subject}'")
         except Exception as e:
-            failed += 1
-            logger.exception(f"Upload error for {clean_name}: {e}")
-            await tracker.update(
-                processed=processed,
-                failed=failed,
-                bytes_downloaded=cumulative_downloaded_bytes,
-                bytes_uploaded=cumulative_uploaded_bytes,
-                next_item=(lines[idx] if idx < total else None)
-            )
-        finally:
-            if file_path and os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except Exception:
-                    pass
+            logger.error(f"Unexpected error during upload of '{clean_name}': {e}")
+            success = False
 
-        # --- Update main Telegram status message ---
+        # If upload failed using a cached thread id, attempt to recreate topic once and retry
+        if is_forum and not success and subject_threads.get(subject) == chat_cache.get(subject_norm):
+            try:
+                logger.info(f"Retrying by creating a fresh topic for subject '{subject}' due to failure in cached thread_id")
+                new_thread_id = await bot_api_create_forum_topic(channel_id, subject)
+                if new_thread_id:
+                    subject_threads[subject] = new_thread_id
+                    chat_cache[subject_norm] = new_thread_id
+                    save_forum_cache(forum_cache)
+                    await mongo_set_thread_id(channel_id, subject_norm, new_thread_id)
+                    current_thread_id = new_thread_id
+                    logger.info(f"Created new topic with thread_id={new_thread_id}; retrying upload")
+                    success = await upload_file_to_channel(
+                        client,
+                        file_path,
+                        caption,
+                        channel_id,
+                        item_status,
+                        message_thread_id=new_thread_id,
+                        pyro_target=pyro_target,
+                        cancel_user_id=user_id,
+                        original_url=url_stripped,
+                    )
+            except Exception as e:
+                logger.error(f"Retry after creating new topic failed: {e}")
+
+        if success:
+            logger.info(f"Uploaded '{clean_name}' successfully under '{subject}' as #{current_index}.")
+            # Delete the provisional header message once the first upload succeeds to keep the thread clean
+            try:
+                if 'header_msg_id' in locals() and header_msg_id:
+                    await bot_api_delete_message(channel_id, header_msg_id)
+                    header_msg_id = None
+            except Exception:
+                pass
+            # Persist last_index for this topic (continue numbering on future additions)
+            try:
+                if is_forum and current_thread_id is not None:
+                    await mongo_set_last_index(channel_id, subject_norm, current_index)
+            except Exception:
+                pass
+            # Update in-memory counter for this subject
+            subject_counts[subject_norm] = current_index
+            processed += 1
+        else:
+            logger.error(f"Upload failed for '{clean_name}' under '{subject}'.")
+            failed += 1
+
+        # Clean up downloaded file after upload (regardless of success)
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+
+        # Update status message
+        await status_msg.edit_text(
+            f"🚀 Processing:\n"
+            f"• Current line: {idx}/{total}\n"
+            f"• Completed: {processed}\n"
+            f"• Failed: {failed}\n"
+            f"• Batch: {batch_name}"
+        )
+
+        # Rate limiting pause
+        if processed % 5 == 0 and processed > 0:
+            await asyncio.sleep(10)  # longer sleep every 5 successes
+        else:
+            await asyncio.sleep(2)   # brief pause between each
+
+        # Delete the item status message
         try:
-            await status_msg.edit_text(
-                f"🚀 <b>Batch Downloading</b>\n"
-                f"• Total: {total}\n"
-                f"• Completed: {processed}\n"
-                f"• Failed: {failed}\n"
-                f"• Current: {idx}\n"
-                f"• Next: {(lines[idx] if idx < total else '—')}"
-            )
+            await item_status.delete()
         except Exception:
             pass
 
-    # === END LOOP ===
-
-    # Finalize tracker cleanly
-    try:
-        await tracker.stop()
-    except Exception:
-        pass
-
-    save_forum_cache(forum_cache)
+    # Cleanup
+    user_data.pop(user_id, None)
+    active_downloads.pop(user_id, None)
     active_downloads[user_id] = False
+    await status_msg.edit_text("✅ All items processed.")
     return True
-
 
 # ─── Handle potential bad‐time notifications on startup ────────────────────────
 
