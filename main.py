@@ -23,7 +23,8 @@ import asyncio
 import time
 import shutil
 import asyncio
-
+from progress import track_progress
+import aiofiles, shutil
 from pyrogram import Client, filters, idle
 from pyrogram.errors import FloodWait, RPCError, BadMsgNotification, MessageNotModified
 from pyrogram.types import Message
@@ -774,22 +775,57 @@ async def bot_api_delete_message(chat_id: int, message_id: int) -> None:
                 raise Exception(f"BotAPI deleteMessage failed: {data}")
 
 # --- NEW: http download helper (async) ---
-async def _download_http_to_file(session: aiohttp.ClientSession, url: str, tmp_path: str) -> None:
+async def _download_http_to_file(session: aiohttp.ClientSession, url: str, tmp_path: str, status_msg=None, index=1, total_files=1, next_name=None) -> None:
     """
     Streams a resource from `url` and writes to tmp_path atomically.
-    Raises exceptions on HTTP errors.
+    Shows progress in a single Telegram message.
     """
     CHUNK = 64 * 1024
     async with session.get(url, timeout=aiohttp.ClientTimeout(total=600)) as resp:
         if resp.status != 200:
             raise Exception(f"HTTP {resp.status} for {url}")
-        # write to temp file then move
+
+        total_bytes = int(resp.headers.get("Content-Length", 0) or 0)
         tmp_write = tmp_path + ".part"
+
+        # Create progress message once
+        if status_msg is not None:
+            try:
+                progress_msg = await status_msg.reply_text(f"⬇️ Starting download for **{os.path.basename(tmp_path)}**...")
+            except Exception:
+                progress_msg = None
+        else:
+            progress_msg = None
+
         async with aiofiles.open(tmp_write, "wb") as f:
-            async for chunk in resp.content.iter_chunked(CHUNK):
-                await f.write(chunk)
-        # atomic move
+            if progress_msg:
+                # use progress tracker to handle chunk reads + edits
+                await track_progress(
+                    message=progress_msg,
+                    file_name=os.path.basename(tmp_path),
+                    total_bytes=total_bytes,
+                    reader=resp.content,
+                    writer=f,
+                    index=index,
+                    total_files=total_files,
+                    next_name=next_name,
+                    phase="Downloading"
+                )
+            else:
+                # fallback: normal write without progress
+                async for chunk in resp.content.iter_chunked(CHUNK):
+                    await f.write(chunk)
+
+        # atomic move once done
         shutil.move(tmp_write, tmp_path)
+
+        # final update
+        if progress_msg:
+            try:
+                await progress_msg.edit_text(f"✅ **Download complete:** {os.path.basename(tmp_path)}")
+            except Exception:
+                pass
+
 
 # --- NEW: yt-dlp wrapper (runs in thread) ---
 def _ydl_download_blocking(url: str, out_template: str) -> str:
