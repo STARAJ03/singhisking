@@ -1019,9 +1019,9 @@ async def upload_file_to_channel(
     Retries up to 3 times on RPCError/FloodWait.
     Ensures that thumbnails are cleaned up after use.
     """
-    #progress_msg = await status_msg.reply_text(
-        #f"📤 Preparing upload: **{os.path.basename(file_path)}**"
-    #)
+    progress_msg = await status_msg.reply_text(
+        f"📤 Preparing upload: **{os.path.basename(file_path)}**"
+    )
     start_time = time.time()
     # Total attempts per upload = max_retries; reattempts = max_retries - 1
     max_retries = 1
