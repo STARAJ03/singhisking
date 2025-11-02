@@ -23,6 +23,7 @@ import asyncio
 import time
 import shutil
 import asyncio
+import requests
 from progress_tracker import ProgressTracker
 from pyrogram import Client, filters, idle
 from pyrogram.errors import FloodWait, RPCError, BadMsgNotification, MessageNotModified
