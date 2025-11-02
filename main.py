@@ -1698,94 +1698,94 @@ async def start_processing(client: Client, message: Message, user_id: int):
     return True
 
         # If upload failed using a cached thread id, attempt to recreate topic once and retry
-        if is_forum and not success and subject_threads.get(subject) == chat_cache.get(subject_norm):
-            try:
-                logger.info(f"Retrying by creating a fresh topic for subject '{subject}' due to failure in cached thread_id")
-                new_thread_id = await bot_api_create_forum_topic(channel_id, subject)
-                if new_thread_id:
-                    subject_threads[subject] = new_thread_id
-                    chat_cache[subject_norm] = new_thread_id
-                    save_forum_cache(forum_cache)
-                    await mongo_set_thread_id(channel_id, subject_norm, new_thread_id)
-                    current_thread_id = new_thread_id
-                    logger.info(f"Created new topic with thread_id={new_thread_id}; retrying upload")
-                    success = await upload_file_to_channel(
-                        client,
-                        file_path,
-                        caption,
-                        channel_id,
-                        item_status,
-                        message_thread_id=new_thread_id,
-                        pyro_target=pyro_target,
-                        cancel_user_id=user_id,
-                        original_url=url_stripped,
-                    )
-            except Exception as e:
-                logger.error(f"Retry after creating new topic failed: {e}")
-
-        if success:
-            logger.info(f"Uploaded '{clean_name}' successfully under '{subject}' as #{current_index}.")
-            # Delete the provisional header message once the first upload succeeds to keep the thread clean
-            try:
-                if 'header_msg_id' in locals() and header_msg_id:
-                    await bot_api_delete_message(channel_id, header_msg_id)
-                    header_msg_id = None
-            except Exception:
-                pass
-            # Persist last_index for this topic (continue numbering on future additions)
-            try:
-                if is_forum and current_thread_id is not None:
-                    await mongo_set_last_index(channel_id, subject_norm, current_index)
-            except Exception:
-                pass
-            # Update in-memory counter for this subject
-            subject_counts[subject_norm] = current_index
-            processed += 1
-        else:
-            logger.error(f"Upload failed for '{clean_name}' under '{subject}'.")
-            failed += 1
-        # Update live progress tracker
-        await tracker.update(
-            processed=processed,
-            failed=failed,
-            next_item=(lines[idx] if idx < total else None)
-        )
-
-        # Clean up downloaded file after upload (regardless of success)
-        if file_path and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-
-        # Update status message
-        await status_msg.edit_text(
-            f"🚀 Processing:\n"
-            f"• Current line: {idx}/{total}\n"
-            f"• Completed: {processed}\n"
-            f"• Failed: {failed}\n"
-            f"• Batch: {batch_name}"
-        )
-
-        # Rate limiting pause
-        if processed % 5 == 0 and processed > 0:
-            await asyncio.sleep(10)  # longer sleep every 5 successes
-        else:
-            await asyncio.sleep(2)   # brief pause between each
-
-        # Delete the item status message
+    if is_forum and not success and subject_threads.get(subject) == chat_cache.get(subject_norm):
         try:
-            await item_status.delete()
+            logger.info(f"Retrying by creating a fresh topic for subject '{subject}' due to failure in cached thread_id")
+            new_thread_id = await bot_api_create_forum_topic(channel_id, subject)
+            if new_thread_id:
+                subject_threads[subject] = new_thread_id
+                chat_cache[subject_norm] = new_thread_id
+                save_forum_cache(forum_cache)
+                await mongo_set_thread_id(channel_id, subject_norm, new_thread_id)
+                current_thread_id = new_thread_id
+                logger.info(f"Created new topic with thread_id={new_thread_id}; retrying upload")
+                success = await upload_file_to_channel(
+                    client,
+                    file_path,
+                    caption,
+                    channel_id,
+                    item_status,
+                    message_thread_id=new_thread_id,
+                    pyro_target=pyro_target,
+                    cancel_user_id=user_id,
+                    original_url=url_stripped,
+                )
+        except Exception as e:
+            logger.error(f"Retry after creating new topic failed: {e}")
+
+    if success:
+        logger.info(f"Uploaded '{clean_name}' successfully under '{subject}' as #{current_index}.")
+        # Delete the provisional header message once the first upload succeeds to keep the thread clean
+        try:
+            if 'header_msg_id' in locals() and header_msg_id:
+                await bot_api_delete_message(channel_id, header_msg_id)
+                header_msg_id = None
+        except Exception:
+            pass
+         # Persist last_index for this topic (continue numbering on future additions)
+        try:
+            if is_forum and current_thread_id is not None:
+                await mongo_set_last_index(channel_id, subject_norm, current_index)
+         except Exception:
+            pass
+        # Update in-memory counter for this subject
+        subject_counts[subject_norm] = current_index
+         processed += 1
+    else:
+        logger.error(f"Upload failed for '{clean_name}' under '{subject}'.")
+        failed += 1
+    # Update live progress tracker
+    await tracker.update(
+        processed=processed,
+        failed=failed,
+        next_item=(lines[idx] if idx < total else None)
+    )
+
+    # Clean up downloaded file after upload (regardless of success)
+    if file_path and os.path.exists(file_path):
+        try:
+            os.remove(file_path)
         except Exception:
             pass
 
-    # Cleanup
-    user_data.pop(user_id, None)
-    active_downloads.pop(user_id, None)
-    active_downloads[user_id] = False
-    await status_msg.edit_text("✅ All items processed.")
-    await tracker.stop()
-    return True
+    # Update status message
+    await status_msg.edit_text(
+        f"🚀 Processing:\n"
+        f"• Current line: {idx}/{total}\n"
+        f"• Completed: {processed}\n"
+        f"• Failed: {failed}\n"
+        f"• Batch: {batch_name}"
+    )
+
+    # Rate limiting pause
+    if processed % 5 == 0 and processed > 0:
+        await asyncio.sleep(10)  # longer sleep every 5 successes
+    else:
+        await asyncio.sleep(2)   # brief pause between each
+
+    # Delete the item status message
+    try:
+        await item_status.delete()
+    except Exception:
+        pass
+
+# Cleanup
+user_data.pop(user_id, None)
+active_downloads.pop(user_id, None)
+active_downloads[user_id] = False
+await status_msg.edit_text("✅ All items processed.")
+await tracker.stop()
+return True
 
 # ─── Handle potential bad‐time notifications on startup ────────────────────────
 
