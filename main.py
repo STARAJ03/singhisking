@@ -1143,16 +1143,7 @@ async def upload_file_to_channel(
                             duration=duration,
                             supports_streaming=True,
                             progress=progress_callback,
-                            progress_args=(
-                                progress_msg,                     # the message to edit
-                                os.path.basename(file_path),      # file name
-                                os.path.getsize(file_path),       # total bytes
-                                start_time,                       # time started
-                                1,                                # current index (replace with real queue index)
-                                10,                               # total files (replace with queue size variable)
-                                None,                             # next file name (optional)
-                                "Uploading"                       # phase name
-                            )
+                            progress_args=(status_msg, time.time(), os.path.basename(file_path), index, total_files, next_name, "Uploading")
                         )
 
                     return True
