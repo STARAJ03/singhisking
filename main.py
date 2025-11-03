@@ -1149,6 +1149,14 @@ async def upload_file_to_channel(
                             progress=progress_callback,
                             progress_args=(status_msg, time.time(), os.path.basename(file_path), index, lines, next_name, "Uploading")
                         )
+                        # ✅ Clean up progress message after successful upload
+                        try:
+                            if 'progress_msg' in locals() and progress_msg:
+                                await asyncio.sleep(2)  # small delay so user sees 100%
+                                await progress_msg.delete()
+                        except Exception:
+                            pass
+
 
                     return True
                 finally:
