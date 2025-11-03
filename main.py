@@ -30,7 +30,7 @@ from pyrogram.errors import FloodWait, RPCError, BadMsgNotification, MessageNotM
 from pyrogram.types import Message
 from typing import Dict, List, Optional
 from progress import progress_callback
-
+import math, subprocess
 
 # NEW imports for async HTTP downloads and youtube support
 import aiohttp
@@ -1946,7 +1946,6 @@ if __name__ == "__main__":
 # ────────────────────────────────
 # 🎬 Splitter for large videos (memory-safe, FFmpeg)
 # ────────────────────────────────
-import math, subprocess, os
 
 def split_large_video_ffmpeg(input_path: str, max_size_gb: float = 1.99):
     """
