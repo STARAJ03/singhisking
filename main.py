@@ -1244,56 +1244,50 @@ async def upload_file_to_channel(
                 return True
 
             # 📄 NON-VIDEO FILES
+            # 📄 NON-VIDEO FILES
             else:
-                send_kwargs = dict(
-                    chat_id=channel_id,
-                    document=file_path,
-                    caption=caption,
-                    progress=progress_callback,
-                    progress_args=(
-                        progress_msg,
-                        os.path.basename(file_path),
-                        os.path.getsize(file_path),
-                        start_time,
-                        1,
-                        lines,
-                        None,
-                        "Uploading"
-                    )
-                )
-                if message_thread_id is not None:
-                    send_kwargs["message_thread_id"] = message_thread_id
-
-                await bot.send_document(**send_kwargs)
-
                 try:
-                    if progress_msg:
-                        await asyncio.sleep(2)
-                        await progress_msg.delete()
-                except Exception:
-                    pass
-                return True
+                    if message_thread_id is not None:
+                        # Use Bot API for thread uploads
+                        await bot_api_send_document(
+                            channel_id,
+                            message_thread_id,
+                            file_path,
+                            caption
+                        )
+                    else:
+                        # Regular channel (no thread)
+                        await bot.send_document(
+                            chat_id=channel_id,
+                            document=file_path,
+                            caption=caption,
+                            progress=progress_callback,
+                            progress_args=(
+                                progress_msg,
+                                os.path.basename(file_path),
+                                os.path.getsize(file_path),
+                                start_time,
+                                1,
+                                lines,
+                                None,
+                                "Uploading"
+                            )
+                        )
 
-        # ───── Exception handling / retry ─────
-        except FloodWait as e:
-            logger.warning(f"FloodWait during upload: sleeping for {e.value}s")
-            await asyncio.sleep(e.value)
-            continue
-        except RPCError as e:
-            logger.error(f"RPCError on upload (attempt {attempt+1}): {e}")
-            if attempt == max_retries - 1:
-                return False
-            await asyncio.sleep(2 ** attempt)
-            continue
-        except Cancelled as e:
-            logger.info(str(e))
-            return False
-        except Exception as e:
-            logger.error(f"Unexpected upload error (attempt {attempt+1}): {e}")
-            if attempt == max_retries - 1:
-                return False
-            await asyncio.sleep(2 ** attempt)
-    return False
+                        # ✅ Clean up progress message after successful upload
+                    try:
+                        if progress_msg:
+                            await asyncio.sleep(2)
+                            await progress_msg.delete()
+                    except Exception:
+                        pass
+
+                    return True
+
+                except Exception as be:
+                    logger.error(f"Document upload failed: {be}")
+                    return False
+
 
 
 
