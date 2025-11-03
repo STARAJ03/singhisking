@@ -1147,7 +1147,7 @@ async def upload_file_to_channel(
                             duration=duration,
                             supports_streaming=True,
                             progress=progress_callback,
-                            progress_args=(status_msg, time.time(), os.path.basename(file_path), index, lines, next_name, "Uploading")
+                            progress_args=((progress_msg, time.time(), os.path.basename(file_path), "Uploading"))
                         )
                         # ✅ Clean up progress message after successful upload
                         try:
