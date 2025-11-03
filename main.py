@@ -1093,7 +1093,18 @@ async def upload_file_to_channel(
                 if file_path.lower().endswith((".mp4", ".mkv", ".mov")) and file_size > 1.99 * 1024**3:
                     parts = split_large_video_ffmpeg(file_path)
                     for idx, part in enumerate(parts, start=1):
-                        part_caption = f"{caption} | (Part {idx}/{len(parts)})"
+                        # 🧩 Build improved caption with part tag in title line
+                        caption_lines = [
+                            f"✧ {subject_text} ✧",
+                            "━━━━━━━━━━",
+                            f"▸ 𝙄𝙣𝙙𝙚𝙭  -  {index_number}",
+                            f"▸ 𝙏𝙞𝙩𝙡𝙚    -  {title.strip()} (Part {idx}/{len(parts)})",
+                            "━━━━━━━━━━",
+                            batch.strip(),
+                            "━━━━━━━━━━",
+                            f"▸ 𝙀𝙭𝙩𝙧𝙖𝙘𝙩𝙚𝙙 𝘽𝙮 - {downloaded_by.strip()}",
+                        ]
+                        part_caption = "\n".join(caption_lines)
                         await upload_file_to_channel(
                             bot, part, part_caption, channel_id, status_msg,
                             message_thread_id=message_thread_id,
