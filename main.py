@@ -30,7 +30,7 @@ from pyrogram.errors import FloodWait, RPCError, BadMsgNotification, MessageNotM
 from pyrogram.types import Message
 from typing import Dict, List, Optional
 from progress import progress_callback
-import math, subprocess
+
 
 # NEW imports for async HTTP downloads and youtube support
 import aiohttp
@@ -997,6 +997,59 @@ async def download_file(url: str, filename: str, status_msg=None) -> str:
             raise Exception(f"Download failed for {url}: {e}")
 
 # ... rest of your original code continues unchanged ...
+def split_large_video_ffmpeg(input_path: str, max_size_gb: float = 1.99):
+    """
+    Splits a large video into equal-sized parts using FFmpeg stream-copy mode.
+    - Each part will be <= max_size_gb.
+    - Output parts are automatically named: file_part1.mp4, file_part2.mp4, etc.
+    - Returns list of generated part file paths.
+    """
+    try:
+        file_size = os.path.getsize(input_path)
+        max_bytes = int(max_size_gb * (1024 ** 3))
+        if file_size <= max_bytes:
+            return [input_path]
+
+        num_parts = math.ceil(file_size / max_bytes)
+        base, ext = os.path.splitext(input_path)
+        parts = []
+
+        # probe duration
+        probe_cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            input_path
+        ]
+        result = subprocess.run(probe_cmd, capture_output=True, text=True)
+        duration = float(result.stdout.strip() or 0)
+        if duration <= 0:
+            return [input_path]
+
+        part_duration = duration / num_parts
+
+        for i in range(num_parts):
+            out_path = f"{base}_part{i+1}{ext}"
+            start = i * part_duration
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-ss", str(start),
+                "-i", input_path,
+                "-t", str(part_duration),
+                "-c", "copy", "-y", out_path
+            ]
+            try:
+                subprocess.run(cmd, check=True)
+                parts.append(out_path)
+            except Exception as e:
+                print(f"[WARN] FFmpeg split failed for part {i+1}: {e}")
+                if os.path.exists(out_path):
+                    os.remove(out_path)
+        return parts or [input_path]
+
+    except Exception as e:
+        print(f"[ERROR] Split failed: {e}")
+        return [input_path]
 
 # ─── Upload helper (unchanged from your file) ───────────────────────────────────
 async def upload_file_to_channel(
@@ -1030,6 +1083,36 @@ async def upload_file_to_channel(
         try:
             if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                 raise Cancelled("Cancelled before upload start")
+                
+
+            # ── check size and split if >1.99 GB ──
+            try:
+                file_size = os.path.getsize(file_path)
+                if file_path.lower().endswith((".mp4", ".mkv", ".mov")) and file_size > 1.99 * 1024**3:
+                    parts = split_large_video_ffmpeg(file_path)
+                    for idx, part in enumerate(parts, start=1):
+                        part_caption = f"{caption} | (Part {idx}/{len(parts)})"
+                        await upload_file_to_channel(
+                            bot, part, part_caption, channel_id, status_msg,
+                            message_thread_id=message_thread_id,
+                            pyro_target=pyro_target,
+                            cancel_user_id=cancel_user_id,
+                            original_url=original_url,
+                            index=index,
+                            lines=lines,
+                            next_name=next_name
+                        )
+                        # Auto delete split part
+                        try:
+                            if part != file_path and os.path.exists(part):
+                                os.remove(part)
+                        except Exception:
+                            pass
+                    return True
+            except Exception as e:
+                logger.error(f"Split check failed: {e}")
+
+            # Now the existing block continues normally
             if file_path.lower().endswith(".mp4"):
                 # Embed original link if codec is non-H.264/AVC OR codec probe failed/empty
                 try:
@@ -1942,65 +2025,6 @@ if __name__ == "__main__":
                     finally:
                         await app.stop()
                 import asyncio as _a
-
-# ────────────────────────────────
-# 🎬 Splitter for large videos (memory-safe, FFmpeg)
-# ────────────────────────────────
-
-def split_large_video_ffmpeg(input_path: str, max_size_gb: float = 1.99):
-    """
-    Splits a large video into equal-sized parts using FFmpeg stream-copy mode.
-    - Each part will be <= max_size_gb.
-    - Output parts are automatically named: file_part1.mp4, file_part2.mp4, etc.
-    - Returns list of generated part file paths.
-    """
-    try:
-        file_size = os.path.getsize(input_path)
-        max_bytes = int(max_size_gb * (1024 ** 3))
-        if file_size <= max_bytes:
-            return [input_path]
-
-        num_parts = math.ceil(file_size / max_bytes)
-        base, ext = os.path.splitext(input_path)
-        parts = []
-
-        # probe duration
-        probe_cmd = [
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            input_path
-        ]
-        result = subprocess.run(probe_cmd, capture_output=True, text=True)
-        duration = float(result.stdout.strip() or 0)
-        if duration <= 0:
-            return [input_path]
-
-        part_duration = duration / num_parts
-
-        for i in range(num_parts):
-            out_path = f"{base}_part{i+1}{ext}"
-            start = i * part_duration
-            cmd = [
-                "ffmpeg", "-hide_banner", "-loglevel", "error",
-                "-ss", str(start),
-                "-i", input_path,
-                "-t", str(part_duration),
-                "-c", "copy", "-y", out_path
-            ]
-            try:
-                subprocess.run(cmd, check=True)
-                parts.append(out_path)
-            except Exception as e:
-                print(f"[WARN] FFmpeg split failed for part {i+1}: {e}")
-                if os.path.exists(out_path):
-                    os.remove(out_path)
-        return parts or [input_path]
-
-    except Exception as e:
-        print(f"[ERROR] Split failed: {e}")
-        return [input_path]
-
                 _a.run(_warm_log())
         except Exception as _e:
             logger.warning(f"Log channel warm skipped: {_e}")
