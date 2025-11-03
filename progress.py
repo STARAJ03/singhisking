@@ -5,9 +5,9 @@ import time
 # ────────────────────────────────
 # 🔧 CONFIGURATION
 # ────────────────────────────────
-UPDATE_INTERVAL = 5   # seconds between UI updates
+UPDATE_INTERVAL = 4   # seconds between UI updates
 BAR_LENGTH = 20       # characters for progress bar
-MIN_PERCENT_STEP = 3  # update only if +3% progress since last edit
+MIN_PERCENT_STEP = 2  # update only if +2% progress since last edit
 
 
 # ────────────────────────────────
@@ -38,8 +38,20 @@ def speed_in_mbps(bytes_done, elapsed_time):
     return (bytes_done / 1024 / 1024) / elapsed_time
 
 
+def format_eta(seconds):
+    """Convert seconds to m s format"""
+    if seconds <= 0:
+        return "0s"
+    minutes = int(seconds // 60)
+    seconds = int(seconds % 60)
+    if minutes > 0:
+        return f"{minutes}m {seconds}s"
+    else:
+        return f"{seconds}s"
+
+
 # ────────────────────────────────
-# 🚀 Main Progress Handler (optimized)
+# 🚀 Main Progress Handler
 # ────────────────────────────────
 _last_percent_cache = {}  # prevent over-editing per message
 
@@ -50,35 +62,41 @@ async def progress_callback(
 ):
     """Update a single Telegram message with download/upload progress"""
 
+    # Safeguard in case Pyrogram passes extra arguments
+    if isinstance(phase, (int, float)):
+        phase = "Uploading"
+
     try:
         start_time = float(start_time)
     except Exception:
         start_time = time.time()
 
-    current_bytes = current
-    total_bytes = total
+    current_bytes = current or 0
+    total_bytes = total or 1
     now = time.time()
     elapsed = now - start_time
 
-    percent = (current_bytes / total_bytes) * 100 if total_bytes else 0
+    percent = (current_bytes / total_bytes) * 100
     speed = speed_in_mbps(current_bytes, elapsed)
     done = human_readable_size(current_bytes)
     total_hr = human_readable_size(total_bytes)
-    eta = (total_bytes - current_bytes) / (speed * 1024 * 1024) if speed > 0 else 0
+    eta_seconds = (total_bytes - current_bytes) / (speed * 1024 * 1024) if speed > 0 else 0
+    eta = format_eta(eta_seconds)
 
-    # 🧠 Skip update if less than 3% change since last message
-    last_percent = _last_percent_cache.get(message.chat.id, 0)
+    # 🧠 Limit redundant updates
+    msg_key = getattr(message, "chat", None)
+    msg_key = getattr(msg_key, "id", None) or id(message)
+    last_percent = _last_percent_cache.get(msg_key, 0)
     if percent - last_percent < MIN_PERCENT_STEP and percent < 100:
         return
-    _last_percent_cache[message.chat.id] = percent
+    _last_percent_cache[msg_key] = percent
 
-    # Build progress text (no queue info)
     progress_text = (
         f"📦 **{phase} File:** {file_name}\n"
         f"📊 **Progress:** {progress_bar(percent)} `{percent:.1f}%`\n"
         f"📁 **Size:** {done} / {total_hr}\n"
         f"⚡ **Speed:** {speed:.2f} MB/s\n"
-        f"⏱️ **ETA:** {int(eta)}s\n"
+        f"⏱️ **ETA:** {eta}\n"
     )
 
     try:
@@ -86,9 +104,9 @@ async def progress_callback(
     except Exception:
         pass
 
-    # ✅ Auto-delete progress message when complete
+    # ✅ Auto-delete when complete
     if percent >= 100:
-        await asyncio.sleep(2)  # small delay to show 100%
+        await asyncio.sleep(2)
         try:
             await message.delete()
         except Exception:
@@ -96,7 +114,7 @@ async def progress_callback(
 
 
 # ────────────────────────────────
-# 🧵 Stream Tracker for aiohttp or manual file writes
+# 🧵 Stream Tracker (for downloads)
 # ────────────────────────────────
 async def track_progress(
     message,
@@ -119,7 +137,6 @@ async def track_progress(
         writer.write(chunk)
         bytes_done += len(chunk)
 
-        # Update progress only every few seconds (or large jumps)
         if time.time() - last_update > UPDATE_INTERVAL:
             await progress_callback(
                 bytes_done,
