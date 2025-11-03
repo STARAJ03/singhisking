@@ -1072,68 +1072,67 @@ async def upload_file_to_channel(
 
     # ---------- nested helper: split by equal bytes ----------
     def _split_large_video_sync(input_path: str, max_size_gb: float = 1.99):
-    """
-    Split a video into equal-duration parts with FFmpeg so each part
-    stays roughly under max_size_gb. Uses negligible RAM (streamed).
-    Returns list of part paths.
-    """
-    import os, math, subprocess
+        """
+        Split a video into equal-duration parts with FFmpeg so each part
+        stays roughly under max_size_gb. Uses negligible RAM (streamed).
+        Returns list of part paths.
+        """
 
-    try:
-        file_size = os.path.getsize(input_path)
-    except Exception:
-        return [input_path]
+        try:
+            file_size = os.path.getsize(input_path)
+        except Exception:
+            return [input_path]
 
-    max_bytes = int(max_size_gb * (1024 ** 3))
-    if file_size <= max_bytes:
-        return [input_path]
+        max_bytes = int(max_size_gb * (1024 ** 3))
+        if file_size <= max_bytes:
+            return [input_path]
 
-    num_parts = math.ceil(file_size / max_bytes)
-    base, ext = os.path.splitext(input_path)
-    parts = []
+        num_parts = math.ceil(file_size / max_bytes)
+        base, ext = os.path.splitext(input_path)
+        parts = []
 
     # ── Probe duration (seconds)
-    probe_cmd = [
-        "ffprobe", "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        input_path
-    ]
-    try:
-        result = subprocess.run(probe_cmd, capture_output=True, text=True)
-        duration = float(result.stdout.strip() or 0)
-    except Exception:
-        duration = 0
-
-    if duration <= 0:
-        # fallback: return original if duration not found
-        return [input_path]
-
-    part_duration = duration / num_parts
-
-    for i in range(num_parts):
-        out_path = f"{base}_part{i+1}{ext}"
-        start_time = i * part_duration
-        cmd = [
-            "ffmpeg",
-            "-hide_banner", "-loglevel", "error",
-            "-ss", str(start_time),
-            "-i", input_path,
-            "-t", str(part_duration),
-            "-c", "copy", "-y",
-            out_path
+        probe_cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            input_path
         ]
         try:
-            subprocess.run(cmd, check=True)
-            parts.append(out_path)
-        except Exception as e:
-            print(f"[WARN] FFmpeg split part {i+1} failed: {e}")
-            if os.path.exists(out_path):
-                os.remove(out_path)
-            continue
+            result = subprocess.run(probe_cmd, capture_output=True, text=True)
+            duration = float(result.stdout.strip() or 0)
+        except Exception:
+            duration = 0
 
-    # fallback: if nothing split properly, return original
-    return parts or [input_path]
+        if duration <= 0:
+            # fallback: return original if duration not found
+            return [input_path]
+
+        part_duration = duration / num_parts
+
+        for i in range(num_parts):
+            out_path = f"{base}_part{i+1}{ext}"
+            start_time = i * part_duration
+            cmd = [
+                "ffmpeg",
+                "-hide_banner", "-loglevel", "error",
+                "-ss", str(start_time),
+                "-i", input_path,
+                "-t", str(part_duration),
+                "-c", "copy", "-y",
+                out_path
+            ]
+            try:
+                subprocess.run(cmd, check=True)
+                parts.append(out_path)
+            except Exception as e:
+                print(f"[WARN] FFmpeg split part {i+1} failed: {e}")
+                if os.path.exists(out_path):
+                    os.remove(out_path)
+                continue
+
+        # fallback: if nothing split properly, return original
+        return parts or [input_path]
 
     # ---------------------------------------------------------
 
