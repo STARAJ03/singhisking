@@ -1058,12 +1058,10 @@ async def upload_file_to_channel(
     next_name: Optional[str] = None,
 ) -> bool:
     """
-    Uploads .mp4 or other documents to channel/thread with:
-    • Threaded uploads
-    • Auto-split (>1.99 GB) into parts
-    • Per-part progress
-    • Clean caption formatting
-    • Automatic deletion of progress and temp parts
+    Uploads .mp4 or other documents to a channel/thread.
+    • Supports auto-splitting >1.99 GB
+    • Deletes temp parts + progress messages automatically
+    • Places (Part x/y) beside “sir :” or at end if not found
     """
     progress_msg = await status_msg.reply_text(
         f"📤 Preparing upload: **{os.path.basename(file_path)}**"
@@ -1071,9 +1069,7 @@ async def upload_file_to_channel(
     start_time = time.time()
     max_retries = 1
 
-    # ─────────────────────────────────────────────
-    # 🔧 Helper: Split large videos safely with ffmpeg
-    # ─────────────────────────────────────────────
+    # ──────────────── Split Helper ────────────────
     def _split_large_video_sync(input_path: str, max_size_gb: float = 1.99):
         import math, os, subprocess
 
@@ -1107,13 +1103,11 @@ async def upload_file_to_channel(
             return [input_path]
 
         part_duration = duration / num_parts
-
         for i in range(num_parts):
             out_path = f"{base}_part{i+1}{ext}"
             start_time = i * part_duration
             cmd = [
-                "ffmpeg",
-                "-hide_banner", "-loglevel", "error",
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
                 "-ss", str(start_time),
                 "-i", input_path,
                 "-t", str(part_duration),
@@ -1129,164 +1123,159 @@ async def upload_file_to_channel(
                     os.remove(out_path)
         return parts or [input_path]
 
-    # ─────────────────────────────────────────────
-    # 🚀 Upload Logic
-    # ─────────────────────────────────────────────
+    # ──────────────── Upload Logic ────────────────
     for attempt in range(max_retries):
         try:
             if cancel_user_id and not active_downloads.get(cancel_user_id, True):
                 raise Cancelled("Cancelled before upload start")
 
-            # 🎬 VIDEO UPLOADS
+            # 🎬 VIDEO FILES
             if file_path.lower().endswith(".mp4"):
                 MAX_GB = 1.99
-                try:
-                    file_size_bytes = os.path.getsize(file_path)
-                except Exception:
-                    file_size_bytes = 0
-
-                # Split if necessary
+                file_size = os.path.getsize(file_path)
                 parts = (
                     _split_large_video_sync(file_path, MAX_GB)
-                    if file_size_bytes > int(MAX_GB * 1024 ** 3)
+                    if file_size > int(MAX_GB * 1024 ** 3)
                     else [file_path]
                 )
 
                 total_parts = len(parts)
 
                 for p_index, part_path in enumerate(parts, start=1):
-                    # Append (Part x/y) only to title section of caption
+                    # Insert (Part x/y) beside "sir :" or at end
+                    part_suffix = f"(Part {p_index}/{total_parts})"
                     if total_parts > 1:
-                        modified_caption = caption.replace(
-                            "sir :", f"sir : (Part {p_index}/{total_parts})"
-                        )
+                        if "sir :" in caption:
+                            modified_caption = caption.replace("sir :", f"sir : {part_suffix}")
+                        else:
+                            # fallback: append at the end before final line or emoji
+                            modified_caption = caption.strip()
+                            if not modified_caption.endswith((":", "|", "—", "-", "–")):
+                                modified_caption += " :"
+                            modified_caption += f" {part_suffix}"
                     else:
                         modified_caption = caption
 
-                    print(f"[INFO] Starting upload Part {p_index}/{total_parts}: {os.path.basename(part_path)}")
+                    print(f"[INFO] Uploading Part {p_index}/{total_parts}: {os.path.basename(part_path)}")
 
-                    try:
-                        part_progress_msg = await status_msg.reply_text(
-                            f"📤 Preparing upload: **{os.path.basename(part_path)}**"
-                        )
-                    except Exception:
-                        part_progress_msg = progress_msg
+                    part_progress_msg = await status_msg.reply_text(
+                        f"📤 Uploading Part {p_index}/{total_parts}: **{os.path.basename(part_path)}**"
+                    )
 
-                    if cancel_user_id and not active_downloads.get(cancel_user_id, True):
-                        raise Cancelled("Cancelled before upload (part)")
-
-                    # thumbnail & duration
+                    thumb = None
                     try:
                         thumb = await extract_thumbnail_async(part_path)
                     except Exception:
-                        thumb = None
+                        pass
+
                     try:
                         duration = int(await duration_async(part_path))
                     except Exception:
                         duration = None
 
                     try:
-                        send_kwargs = dict(
-                            chat_id=channel_id,
-                            caption=modified_caption,
-                            thumb=thumb,
-                            duration=duration,
-                            supports_streaming=True,
-                            progress=progress_callback,
-                            progress_args=(
-                                part_progress_msg,
-                                os.path.basename(part_path),
-                                os.path.getsize(part_path),
-                                start_time,
-                                1,
-                                lines,
-                                None,
-                                "Uploading"
+                        if message_thread_id:
+                            # Thread upload → use Bot API
+                            await bot_api_send_video(
+                                channel_id,
+                                message_thread_id,
+                                part_path,
+                                modified_caption,
+                                duration=duration,
+                                thumb_path=thumb
                             )
-                        )
-                        if message_thread_id is not None:
-                            send_kwargs["message_thread_id"] = message_thread_id
+                        else:
+                            # Normal channel upload → use Pyrogram
+                            await bot.send_video(
+                                chat_id=channel_id,
+                                video=part_path,
+                                caption=modified_caption,
+                                thumb=thumb,
+                                duration=duration,
+                                supports_streaming=True,
+                                progress=progress_callback,
+                                progress_args=(
+                                    part_progress_msg,
+                                    os.path.basename(part_path),
+                                    os.path.getsize(part_path),
+                                    start_time,
+                                    1,
+                                    lines,
+                                    None,
+                                    "Uploading"
+                                )
+                            )
 
-                        await bot.send_video(video=part_path, **send_kwargs)
-
-                        # ✅ Log success
-                        size_gb = os.path.getsize(part_path) / (1024 ** 3)
-                        print(f"[INFO] Uploaded Part {p_index}/{total_parts} → {size_gb:.2f} GB ✅")
-
-                        # Clean up message
+                        # ✅ Delete progress message
                         try:
-                            if part_progress_msg:
-                                await asyncio.sleep(2)
-                                await part_progress_msg.delete()
+                            await asyncio.sleep(2)
+                            await part_progress_msg.delete()
                         except Exception:
                             pass
 
                     finally:
                         if thumb and os.path.exists(thumb):
-                            try:
-                                os.remove(thumb)
-                            except Exception:
-                                pass
-                        # delete temporary part
-                        try:
-                            if part_path != file_path and os.path.exists(part_path):
-                                os.remove(part_path)
-                        except Exception:
-                            pass
+                            os.remove(thumb)
+                        if part_path != file_path and os.path.exists(part_path):
+                            os.remove(part_path)
 
-                # ✅ all parts done → remove main progress
                 try:
-                    if progress_msg:
-                        await asyncio.sleep(2)
-                        await progress_msg.delete()
+                    await asyncio.sleep(2)
+                    await progress_msg.delete()
                 except Exception:
                     pass
                 return True
 
             # 📄 NON-VIDEO FILES
-            # 📄 NON-VIDEO FILES
             else:
+                if message_thread_id:
+                    await bot_api_send_document(channel_id, message_thread_id, file_path, caption)
+                else:
+                    await bot.send_document(
+                        chat_id=channel_id,
+                        document=file_path,
+                        caption=caption,
+                        progress=progress_callback,
+                        progress_args=(
+                            progress_msg,
+                            os.path.basename(file_path),
+                            os.path.getsize(file_path),
+                            start_time,
+                            1,
+                            lines,
+                            None,
+                            "Uploading"
+                        )
+                    )
+
+                # ✅ Remove progress message
                 try:
-                    if message_thread_id is not None:
-                        # Use Bot API for thread uploads
-                        await bot_api_send_document(
-                            channel_id,
-                            message_thread_id,
-                            file_path,
-                            caption
-                        )
-                    else:
-                        # Regular channel (no thread)
-                        await bot.send_document(
-                            chat_id=channel_id,
-                            document=file_path,
-                            caption=caption,
-                            progress=progress_callback,
-                            progress_args=(
-                                progress_msg,
-                                os.path.basename(file_path),
-                                os.path.getsize(file_path),
-                                start_time,
-                                1,
-                                lines,
-                                None,
-                                "Uploading"
-                            )
-                        )
+                    await asyncio.sleep(2)
+                    await progress_msg.delete()
+                except Exception:
+                    pass
+                return True
 
-                        # ✅ Clean up progress message after successful upload
-                    try:
-                        if progress_msg:
-                            await asyncio.sleep(2)
-                            await progress_msg.delete()
-                    except Exception:
-                        pass
+        except FloodWait as e:
+            logger.warning(f"FloodWait during upload: sleeping for {e.value}s")
+            await asyncio.sleep(e.value)
+            continue
+        except RPCError as e:
+            logger.error(f"RPCError: {e}")
+            if attempt == max_retries - 1:
+                return False
+            await asyncio.sleep(2)
+            continue
+        except Cancelled as e:
+            logger.info(str(e))
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected upload error (attempt {attempt+1}): {e}")
+            if attempt == max_retries - 1:
+                return False
+            await asyncio.sleep(2)
+    return False
 
-                    return True
-
-                except Exception as be:
-                    logger.error(f"Document upload failed: {be}")
-                    return False
 
 
 
