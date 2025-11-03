@@ -1121,13 +1121,13 @@ async def upload_file_to_channel(
                                 os.remove(part)
                         except Exception:
                             pass
-                    # ✅ Clean up the main progress message after all parts finish
-                    try:
-                      if 'progress_msg' in locals() and progress_msg:
-                          await asyncio.sleep(2)  # short delay so user sees completion
-                          await progress_msg.delete()
-                    except Exception:
-                      pass
+                        # ✅ Clean up the main progress message after all parts finish
+                        try:
+                          if 'progress_msg' in locals() and progress_msg:
+                              await asyncio.sleep(2)  # short delay so user sees completion
+                              await progress_msg.delete()
+                        except Exception:
+                          pass
                     return True
             except Exception as e:
                 logger.error(f"Split check failed: {e}")
