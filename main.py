@@ -42,7 +42,7 @@ from bson.binary import Binary
 from bson.objectid import ObjectId
 from datetime import datetime, timezone
 import math
-
+import subprocess
 # ─── Logging Setup ──────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -66,27 +66,6 @@ INSTANCE_KEY = os.getenv("INSTANCE_KEY", "").strip()
 # Only these user IDs can trigger /setchannel or upload
 ALLOWED_USER_IDS = [1116405290]
 
-# Splitting Large videos
-async def split_large_video(file_path: str, max_size_gb: float = 1.99):
-    """Split large video into equal parts (by file size, not duration)."""
-    max_bytes = int(max_size_gb * (1024 ** 3))
-    file_size = os.path.getsize(file_path)
-
-    if file_size <= max_bytes:
-        return [file_path]  # no split needed
-
-    parts = []
-    num_parts = math.ceil(file_size / max_bytes)
-    base_name, ext = os.path.splitext(file_path)
-
-    with open(file_path, "rb") as src:
-        for i in range(num_parts):
-            part_path = f"{base_name}_part{i+1}{ext}"
-            with open(part_path, "wb") as dst:
-                dst.write(src.read(max_bytes))
-            parts.append(part_path)
-
-    return parts
 
 app = Client(
     "simple_subject_bot",
@@ -1019,7 +998,49 @@ async def download_file(url: str, filename: str, status_msg=None) -> str:
             # If both HTTP and yt-dlp fail, raise a clear exception
             raise Exception(f"Download failed for {url}: {e}")
 
-# ... rest of your original code continues unchanged ...
+#  rest of your original code continues unchanged 
+async def split_large_video_ffmpeg(input_path: str, max_size_gb: float = 1.99):
+    """
+    Split a video into equal-duration parts with FFmpeg so each part
+    is roughly under max_size_gb.  Uses constant low memory.
+    Returns list of part paths.
+    """
+    file_size = os.path.getsize(input_path)
+    max_bytes = int(max_size_gb * (1024 ** 3))
+    if file_size <= max_bytes:
+        return [input_path]
+
+    num_parts = math.ceil(file_size / max_bytes)
+    base, ext = os.path.splitext(input_path)
+    parts = []
+
+    # ── Probe duration (seconds)
+    probe_cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        input_path
+    ]
+    result = subprocess.run(probe_cmd, capture_output=True, text=True)
+    duration = float(result.stdout.strip() or 0)
+    part_duration = duration / num_parts
+
+    for i in range(num_parts):
+        out_path = f"{base}_part{i+1}{ext}"
+        start_time = i * part_duration
+        cmd = [
+            "ffmpeg",
+            "-hide_banner", "-loglevel", "error",
+            "-ss", str(start_time),
+            "-i", input_path,
+            "-t", str(part_duration),
+            "-c", "copy", "-y",
+            out_path
+        ]
+        subprocess.run(cmd, check=True)
+        parts.append(out_path)
+
+    return parts
 
 # ─── Upload helper (unchanged from your file) ───────────────────────────────────
 async def upload_file_to_channel(
@@ -1051,36 +1072,69 @@ async def upload_file_to_channel(
 
     # ---------- nested helper: split by equal bytes ----------
     def _split_large_video_sync(input_path: str, max_size_gb: float = 1.99):
-        """
-        Synchronous helper: split input_path into equal byte-size parts such that
-        each part <= max_size_gb. Returns list of part paths.
-        """
-        import math, os
+    """
+    Split a video into equal-duration parts with FFmpeg so each part
+    stays roughly under max_size_gb. Uses negligible RAM (streamed).
+    Returns list of part paths.
+    """
+    import os, math, subprocess
 
-        max_bytes = int(max_size_gb * (1024 ** 3))
+    try:
         file_size = os.path.getsize(input_path)
-        if file_size <= max_bytes:
-            return [input_path]
+    except Exception:
+        return [input_path]
 
-        num_parts = math.ceil(file_size / max_bytes)
-        base, ext = os.path.splitext(input_path)
-        parts = []
+    max_bytes = int(max_size_gb * (1024 ** 3))
+    if file_size <= max_bytes:
+        return [input_path]
 
-        with open(input_path, "rb") as src:
-            for i in range(num_parts):
-                part_path = f"{base}_part{i+1}{ext}"
-                # write up to max_bytes for this part
-                with open(part_path, "wb") as dst:
-                    remaining = max_bytes
-                    while remaining > 0:
-                        chunk = src.read(min(1024 * 1024, remaining))
-                        if not chunk:
-                            break
-                        dst.write(chunk)
-                        remaining -= len(chunk)
-                parts.append(part_path)
+    num_parts = math.ceil(file_size / max_bytes)
+    base, ext = os.path.splitext(input_path)
+    parts = []
 
-        return parts
+    # ── Probe duration (seconds)
+    probe_cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        input_path
+    ]
+    try:
+        result = subprocess.run(probe_cmd, capture_output=True, text=True)
+        duration = float(result.stdout.strip() or 0)
+    except Exception:
+        duration = 0
+
+    if duration <= 0:
+        # fallback: return original if duration not found
+        return [input_path]
+
+    part_duration = duration / num_parts
+
+    for i in range(num_parts):
+        out_path = f"{base}_part{i+1}{ext}"
+        start_time = i * part_duration
+        cmd = [
+            "ffmpeg",
+            "-hide_banner", "-loglevel", "error",
+            "-ss", str(start_time),
+            "-i", input_path,
+            "-t", str(part_duration),
+            "-c", "copy", "-y",
+            out_path
+        ]
+        try:
+            subprocess.run(cmd, check=True)
+            parts.append(out_path)
+        except Exception as e:
+            print(f"[WARN] FFmpeg split part {i+1} failed: {e}")
+            if os.path.exists(out_path):
+                os.remove(out_path)
+            continue
+
+    # fallback: if nothing split properly, return original
+    return parts or [input_path]
+
     # ---------------------------------------------------------
 
     for attempt in range(max_retries):
