@@ -1942,6 +1942,66 @@ if __name__ == "__main__":
                     finally:
                         await app.stop()
                 import asyncio as _a
+
+# ────────────────────────────────
+# 🎬 Splitter for large videos (memory-safe, FFmpeg)
+# ────────────────────────────────
+import math, subprocess, os
+
+def split_large_video_ffmpeg(input_path: str, max_size_gb: float = 1.99):
+    """
+    Splits a large video into equal-sized parts using FFmpeg stream-copy mode.
+    - Each part will be <= max_size_gb.
+    - Output parts are automatically named: file_part1.mp4, file_part2.mp4, etc.
+    - Returns list of generated part file paths.
+    """
+    try:
+        file_size = os.path.getsize(input_path)
+        max_bytes = int(max_size_gb * (1024 ** 3))
+        if file_size <= max_bytes:
+            return [input_path]
+
+        num_parts = math.ceil(file_size / max_bytes)
+        base, ext = os.path.splitext(input_path)
+        parts = []
+
+        # probe duration
+        probe_cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            input_path
+        ]
+        result = subprocess.run(probe_cmd, capture_output=True, text=True)
+        duration = float(result.stdout.strip() or 0)
+        if duration <= 0:
+            return [input_path]
+
+        part_duration = duration / num_parts
+
+        for i in range(num_parts):
+            out_path = f"{base}_part{i+1}{ext}"
+            start = i * part_duration
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-ss", str(start),
+                "-i", input_path,
+                "-t", str(part_duration),
+                "-c", "copy", "-y", out_path
+            ]
+            try:
+                subprocess.run(cmd, check=True)
+                parts.append(out_path)
+            except Exception as e:
+                print(f"[WARN] FFmpeg split failed for part {i+1}: {e}")
+                if os.path.exists(out_path):
+                    os.remove(out_path)
+        return parts or [input_path]
+
+    except Exception as e:
+        print(f"[ERROR] Split failed: {e}")
+        return [input_path]
+
                 _a.run(_warm_log())
         except Exception as _e:
             logger.warning(f"Log channel warm skipped: {_e}")
