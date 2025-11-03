@@ -1057,27 +1057,21 @@ async def upload_file_to_channel(
     lines: int = 1,
     next_name: Optional[str] = None,
 ) -> bool:
-
     """
-    Uploads either .mp4 (with thumbnail) or any other document to the channel.
-    Retries up to 3 times on RPCError/FloodWait.
-    Ensures that thumbnails are cleaned up after use.
+    Uploads either .mp4 (with thumbnail) or any other document to the channel or thread.
+    Handles splitting of large videos (>1.99 GB), threaded uploads, cleanup, and progress.
     """
     progress_msg = await status_msg.reply_text(
         f"📤 Preparing upload: **{os.path.basename(file_path)}**"
     )
     start_time = time.time()
-    # Total attempts per upload = max_retries; reattempts = max_retries - 1
     max_retries = 1
 
-    # ---------- nested helper: split by equal bytes ----------
+    # ─────────────────────────────────────────────
+    # 🔧 Helper: split large videos into smaller parts
+    # ─────────────────────────────────────────────
     def _split_large_video_sync(input_path: str, max_size_gb: float = 1.99):
-        """
-        Split a video into equal-duration parts with FFmpeg so each part
-        stays roughly under max_size_gb. Uses negligible RAM (streamed).
-        Returns list of part paths.
-        """
-        import os, math, subprocess
+        import math, os, subprocess
 
         try:
             file_size = os.path.getsize(input_path)
@@ -1092,7 +1086,7 @@ async def upload_file_to_channel(
         base, ext = os.path.splitext(input_path)
         parts = []
 
-        # ── Probe duration (seconds)
+        # probe duration
         probe_cmd = [
             "ffprobe", "-v", "error",
             "-show_entries", "format=duration",
@@ -1106,7 +1100,6 @@ async def upload_file_to_channel(
             duration = 0
 
         if duration <= 0:
-            # fallback: return original if duration not found
             return [input_path]
 
         part_duration = duration / num_parts
@@ -1130,473 +1123,154 @@ async def upload_file_to_channel(
                 print(f"[WARN] FFmpeg split part {i+1} failed: {e}")
                 if os.path.exists(out_path):
                     os.remove(out_path)
-                continue
-
-        # fallback: if nothing split properly, return original
         return parts or [input_path]
 
-
-    # ---------------------------------------------------------
-
+    # ─────────────────────────────────────────────
+    # 🚀 Upload Logic
+    # ─────────────────────────────────────────────
     for attempt in range(max_retries):
         try:
-            if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
+            if cancel_user_id and not active_downloads.get(cancel_user_id, True):
                 raise Cancelled("Cancelled before upload start")
+
+            # 🎬 VIDEO UPLOADS
             if file_path.lower().endswith(".mp4"):
-                # if file is large, split into equal parts first
+                MAX_GB = 1.99
                 try:
                     file_size_bytes = os.path.getsize(file_path)
                 except Exception:
                     file_size_bytes = 0
-                MAX_GB = 1.99
-                if file_size_bytes > int(MAX_GB * 1024 ** 3):
-                    # split into parts (synchronous)
+
+                # Split if necessary
+                parts = (
+                    _split_large_video_sync(file_path, MAX_GB)
+                    if file_size_bytes > int(MAX_GB * 1024 ** 3)
+                    else [file_path]
+                )
+
+                for p_index, part_path in enumerate(parts, start=1):
+                    part_caption = caption
+                    if len(parts) > 1:
+                        part_caption = f"{caption} (Part {p_index}/{len(parts)})"
+
+                    # per-part progress message
                     try:
-                        parts = _split_large_video_sync(file_path, MAX_GB)
-                    except Exception as e:
-                        logger.error(f"Failed to split large file {file_path}: {e}")
-                        parts = [file_path]
+                        part_progress_msg = await status_msg.reply_text(
+                            f"📤 Preparing upload: **{os.path.basename(part_path)}**"
+                        )
+                    except Exception:
+                        part_progress_msg = progress_msg
 
-                    # upload each part sequentially
-                    for p_index, part_path in enumerate(parts, start=1):
-                        part_caption = caption
-                        if len(parts) > 1:
-                            part_caption = f"{caption} (Part {p_index}/{len(parts)})"
+                    if cancel_user_id and not active_downloads.get(cancel_user_id, True):
+                        raise Cancelled("Cancelled before upload (part)")
 
-                        # create a per-part progress message
-                        try:
-                            part_progress_msg = await status_msg.reply_text(
-                                f"📤 Preparing upload: **{os.path.basename(part_path)}**"
+                    # metadata
+                    try:
+                        thumb = await extract_thumbnail_async(part_path)
+                    except Exception:
+                        thumb = None
+                    try:
+                        duration = int(await duration_async(part_path))
+                    except Exception:
+                        duration = None
+
+                    # threaded vs normal upload
+                    try:
+                        send_kwargs = dict(
+                            chat_id=channel_id,
+                            caption=part_caption,
+                            thumb=thumb,
+                            duration=duration,
+                            supports_streaming=True,
+                            progress=progress_callback,
+                            progress_args=(
+                                part_progress_msg,
+                                os.path.basename(part_path),
+                                os.path.getsize(part_path),
+                                start_time,
+                                1,
+                                lines,
+                                None,
+                                "Uploading"
                             )
-                        except Exception:
-                            part_progress_msg = progress_msg  # fallback to earlier message
+                        )
+                        if message_thread_id is not None:
+                            send_kwargs["message_thread_id"] = message_thread_id
 
-                        # pre-check cancellation
-                        if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                            raise Cancelled("Cancelled before thumbnail (part)")
+                        await bot.send_video(video=part_path, **send_kwargs)
 
-                        # extract thumbnail & duration per-part (safe)
+                        # clean up message after part upload
                         try:
-                            thumb = await extract_thumbnail_async(part_path)
+                            if part_progress_msg:
+                                await asyncio.sleep(2)
+                                await part_progress_msg.delete()
                         except Exception:
-                            thumb = None
-                        try:
-                            duration = int(await duration_async(part_path))
-                        except Exception:
-                            duration = None
+                            pass
 
-                        try:
-                            # If we have a thread id, use Bot API to ensure routing into topic (same as original behavior)
-                            if message_thread_id is not None:
-                                try:
-                                    if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                                        raise Cancelled("Cancelled before bot API send video (part)")
-                                    await bot_api_send_video(channel_id, message_thread_id, part_path, part_caption, duration=duration, thumb_path=thumb)
-
-                                    # Delete progress message after successful Bot API video upload
-                                    try:
-                                        if part_progress_msg:
-                                            await asyncio.sleep(2)
-                                            await part_progress_msg.delete()
-                                    except Exception:
-                                        pass
-
-                                except Exception as be:
-                                    if "413" in str(be) or "Request Entity Too Large" in str(be):
-                                        # Hybrid fallback: upload once to get file_id, then delete and resend by id into topic
-                                        tmp_target = LOG_CHANNEL_ID or pyro_target or channel_id
-                                        # Ensure log channel peer is resolved before sending
-                                        if LOG_CHANNEL_ID:
-                                            try:
-                                                await bot.get_chat(LOG_CHANNEL_ID)
-                                            except Exception:
-                                                pass
-                                        if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                                            raise Cancelled("Cancelled before temp upload video (part)")
-                                        try:
-                                            tmp_msg = await bot.send_video(
-                                                chat_id=tmp_target,
-                                                video=part_path,
-                                                caption=part_caption,
-                                                thumb=thumb,
-                                                duration=duration,
-                                                supports_streaming=True
-                                            )
-                                        except RPCError as e:
-                                            if LOG_CHANNEL_ID and "Peer id invalid" in str(e):
-                                                # Retry once after explicit resolve
-                                                try:
-                                                    await bot.get_chat(LOG_CHANNEL_ID)
-                                                    if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                                                        raise Cancelled("Cancelled before temp upload video retry (part)")
-                                                    tmp_msg = await bot.send_video(
-                                                        chat_id=tmp_target,
-                                                        video=part_path,
-                                                        caption=part_caption,
-                                                        thumb=thumb,
-                                                        duration=duration,
-                                                        supports_streaming=True
-                                                    )
-                                                except Exception as e2:
-                                                    raise e2
-                                            else:
-                                                raise
-                                        file_id = getattr(getattr(tmp_msg, "video", None), "file_id", None)
-                                        if file_id:
-                                            try:
-                                                if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                                                    raise Cancelled("Cancelled before Bot API resend video by id (part)")
-                                                await bot_api_send_video_by_id(channel_id, message_thread_id, file_id, part_caption, duration=duration)
-                                                # Delete progress message after successful Bot API video upload
-                                                try:
-                                                    if part_progress_msg:
-                                                        await asyncio.sleep(2)
-                                                        await part_progress_msg.delete()
-                                                except Exception:
-                                                    pass
-                                            finally:
-                                                try:
-                                                    await bot.delete_messages(tmp_target, tmp_msg.id)
-                                                except Exception:
-                                                    pass
-                                        else:
-                                            raise
-                                    else:
-                                        raise
-                            else:
-                                # not a thread -> use Pyrogram send_video (supports progress)
-                                if message_thread_id is None and LOG_CHANNEL_ID:
-                                    # Fallback to tmp upload if no thread id and logic expects that
-                                    tmp_target = LOG_CHANNEL_ID
-                                    try:
-                                        await bot.get_chat(LOG_CHANNEL_ID)
-                                    except Exception:
-                                        pass
-                                    if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                                        raise Cancelled("Cancelled before temp upload video (no thread, part)")
-                                    tmp_msg = await bot.send_video(
-                                        chat_id=tmp_target,
-                                        video=part_path,
-                                        caption=part_caption,
-                                        thumb=thumb,
-                                        duration=duration,
-                                        supports_streaming=True
-                                    )
-                                    file_id = getattr(getattr(tmp_msg, "video", None), "file_id", None)
-                                    if not file_id:
-                                        raise Exception("Could not obtain file_id from temp upload (part)")
-                                    # delete tmp message
-                                    try:
-                                        await bot.delete_messages(tmp_target, tmp_msg.id)
-                                    except Exception:
-                                        pass
-                                    # caller should retry/send by id if topic not available
-                                    raise Exception("Thread id not available yet for forum; skipping direct send (part)")
-                                if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                                    raise Cancelled("Cancelled before direct send video (part)")
-
-                                # Prepare send kwargs (handles channel vs thread transparently)
-                                send_kwargs = dict(
-                                    chat_id=channel_id,
-                                    video=part_path,
-                                    caption=part_caption,
-                                    thumb=thumb,
-                                    duration=duration,
-                                    supports_streaming=True,
-                                    progress=progress_callback,
-                                    progress_args=(
-                                        part_progress_msg,
-                                        os.path.basename(part_path),
-                                        os.path.getsize(part_path),
-                                        start_time,
-                                        1,
-                                        lines,
-                                        None,
-                                        "Uploading"
-                                    )
-                                )
-                                if message_thread_id is not None:
-                                    send_kwargs["message_thread_id"] = message_thread_id
-
-                                await bot.send_video(**send_kwargs)
-
-                                # Clean up progress message after successful upload
-                                try:
-                                    if part_progress_msg:
-                                        await asyncio.sleep(2)  # small delay so user sees 100%
-                                        await part_progress_msg.delete()
-                                except Exception:
-                                    pass
-                                try:
-                                    if 'progress_msg' in locals() and progress_msg:
-                                        await asyncio.sleep(2)  # small delay so user sees 100%
-                                        await progress_msg.delete()
-                                except Exception:
-                                    pass
-
-                            # done single part upload
-                        finally:
-                            if thumb and os.path.exists(thumb):
-                                try:
-                                    os.remove(thumb)
-                                except Exception:
-                                    pass
-
-                        # delete the temporary part file if it was created (not the original)
+                    finally:
+                        if thumb and os.path.exists(thumb):
+                            try:
+                                os.remove(thumb)
+                            except Exception:
+                                pass
+                        # delete temp part
                         try:
                             if part_path != file_path and os.path.exists(part_path):
                                 os.remove(part_path)
                         except Exception:
                             pass
 
-                    # all parts uploaded
-                    return True
-
-                # if not oversized, proceed with normal single-file mp4 flow
-                # Embed original link if codec is non-H.264/AVC OR codec probe failed/empty
+                # ✅ all parts done → remove main progress
                 try:
-                    vcodec, _ = await get_codecs_async(file_path)
-                    if not vcodec or vcodec.lower() not in ("h264", "avc1"):
-                        caption = _embed_link_in_title(caption, original_url)
+                    if progress_msg:
+                        await asyncio.sleep(2)
+                        await progress_msg.delete()
                 except Exception:
-                    # On probe failure, still embed link as a safe fallback
-                    try:
-                        caption = _embed_link_in_title(caption, original_url)
-                    except Exception:
-                        pass
-                # Extract thumbnail if possible
-                if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                    raise Cancelled("Cancelled before thumbnail")
-                thumb = await extract_thumbnail_async(file_path)
-                duration = int(await duration_async(file_path))
-                try:
-                    # If we have a thread id, use Bot API to ensure routing into topic
-                    if message_thread_id is not None:
-                        try:
-                            if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                                raise Cancelled("Cancelled before bot API send video")
-                            await bot_api_send_video(channel_id, message_thread_id, file_path, caption, duration=duration, thumb_path=thumb)
-
-                            # ✅ Clean up progress message after successful upload
-                            try:
-                                if 'progress_msg' in locals() and progress_msg:
-                                    await asyncio.sleep(2)  # small delay so user sees 100%
-                                    await progress_msg.delete()
-                            except Exception:
-                                pass
-
-                        except Exception as be:
-                            if "413" in str(be) or "Request Entity Too Large" in str(be):
-                                # Hybrid fallback: upload once to get file_id, then delete and resend by id into topic
-                                tmp_target = LOG_CHANNEL_ID or pyro_target or channel_id
-                                # Ensure log channel peer is resolved before sending
-                                if LOG_CHANNEL_ID:
-                                    try:
-                                        await bot.get_chat(LOG_CHANNEL_ID)
-                                    except Exception:
-                                        pass
-                                if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                                    raise Cancelled("Cancelled before temp upload video")
-                                try:
-                                    tmp_msg = await bot.send_video(
-                                        chat_id=tmp_target,
-                                        video=file_path,
-                                        caption=caption,
-                                        thumb=thumb,
-                                        duration=duration,
-                                        supports_streaming=True
-                                    )
-                                except RPCError as e:
-                                    if LOG_CHANNEL_ID and "Peer id invalid" in str(e):
-                                        # Retry once after explicit resolve
-                                        try:
-                                            await bot.get_chat(LOG_CHANNEL_ID)
-                                            if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                                                raise Cancelled("Cancelled before temp upload video retry")
-                                            tmp_msg = await bot.send_video(
-                                                chat_id=tmp_target,
-                                                video=file_path,
-                                                caption=caption,
-                                                thumb=thumb,
-                                                duration=duration,
-                                                supports_streaming=True
-                                            )
-                                        except Exception as e2:
-                                            raise e2
-                                    else:
-                                        raise
-                                file_id = getattr(getattr(tmp_msg, "video", None), "file_id", None)
-                                if file_id:
-                                    try:
-                                        if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                                            raise Cancelled("Cancelled before Bot API resend video by id")
-                                        await bot_api_send_video_by_id(channel_id, message_thread_id, file_id, caption, duration=duration)
-                                        # ✅ Delete progress message after successful upload (Bot API uploads)
-                                        try:
-                                            if 'progress_msg' in locals() and progress_msg:
-                                                await asyncio.sleep(2)  # short pause so it looks natural
-                                                await progress_msg.delete()
-                                        except Exception:
-                                            pass
-
-                                    finally:
-                                        try:
-                                            await bot.delete_messages(tmp_target, tmp_msg.id)
-                                        except Exception:
-                                            pass
-                                else:
-                                    raise
-                            else:
-                                raise
-                    else:
-                        # Guard: if we are in a forum context but do not have a thread id yet, do not try Pyrogram direct send to the private group
-                        if message_thread_id is None and LOG_CHANNEL_ID:
-                            # As a fallback, upload to log channel to obtain file_id and then send to topic once thread id is available
-                            tmp_target = LOG_CHANNEL_ID
-                            try:
-                                await bot.get_chat(LOG_CHANNEL_ID)
-                            except Exception:
-                                pass
-                            if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                                raise Cancelled("Cancelled before temp upload video (no thread)")
-                            tmp_msg = await bot.send_video(
-                                chat_id=tmp_target,
-                                video=file_path,
-                                caption=caption,
-                                thumb=thumb,
-                                duration=duration,
-                                supports_streaming=True
-                            )
-                            file_id = getattr(getattr(tmp_msg, "video", None), "file_id", None)
-                            if not file_id:
-                                raise Exception("Could not obtain file_id from temp upload")
-                            # Without thread id we cannot deliver to target yet; caller should retry the item after thread id is available
-                            try:
-                                await bot.delete_messages(tmp_target, tmp_msg.id)
-                            except Exception:
-                                pass
-                            raise Exception("Thread id not available yet for forum; skipping direct send")
-                        if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                            raise Cancelled("Cancelled before direct send video")
-                        await bot.send_video(
-                            chat_id=channel_id,
-                            video=file_path,
-                            caption=caption,
-                            thumb=thumb,
-                            duration=duration,
-                            supports_streaming=True,
-                            progress=progress_callback,
-                            progress_args=( progress_msg, os.path.basename(file_path), os.path.getsize(file_path), start_time, 1, lines, None, "Uploading" )
-                        )
-                        # ✅ Clean up progress message after successful upload
-                        try:
-                            if 'progress_msg' in locals() and progress_msg:
-                                await asyncio.sleep(2)  # small delay so user sees 100%
-                                await progress_msg.delete()
-                        except Exception:
-                            pass
-
-
-                    return True
-                finally:
-                    if thumb and os.path.exists(thumb):
-                        os.remove(thumb)
-            else:
-                # For non‐video files, send as document
-                if message_thread_id is not None:
-                    try:
-                        if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                            raise Cancelled("Cancelled before bot API send document")
-                        await bot_api_send_document(channel_id, message_thread_id, file_path, caption)
-                        # ✅ Clean up progress message after successful upload
-                        try:
-                            if 'progress_msg' in locals() and progress_msg:
-                                await asyncio.sleep(2)  # small delay so user sees 100%
-                                await progress_msg.delete()
-                        except Exception:
-                            pass
-                    except Exception as be:
-                        if "413" in str(be) or "Request Entity Too Large" in str(be):
-                            # Hybrid fallback for documents
-                            tmp_target = LOG_CHANNEL_ID or pyro_target or channel_id
-                            # Ensure log channel peer is resolved before sending
-                            if LOG_CHANNEL_ID:
-                                try:
-                                    await bot.get_chat(LOG_CHANNEL_ID)
-                                except Exception:
-                                    pass
-                            if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                                raise Cancelled("Cancelled before temp upload document")
-                            try:
-                                tmp_msg = await bot.send_document(
-                                    chat_id=tmp_target,
-                                    document=file_path,
-                                    caption=caption
-                                )
-                            except RPCError as e:
-                                if LOG_CHANNEL_ID and "Peer id invalid" in str(e):
-                                    # Retry once after explicit resolve
-                                    try:
-                                        await bot.get_chat(LOG_CHANNEL_ID)
-                                        if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                                            raise Cancelled("Cancelled before temp upload document retry")
-                                        tmp_msg = await bot.send_document(
-                                            chat_id=tmp_target,
-                                            document=file_path,
-                                            caption=caption
-                                        )
-                                    except Exception as e2:
-                                        raise e2
-                                else:
-                                    raise
-                            file_id = getattr(getattr(tmp_msg, "document", None), "file_id", None)
-                            if file_id:
-                                try:
-                                    if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                                        raise Cancelled("Cancelled before Bot API resend document by id")
-                                    await bot_api_send_document_by_id(channel_id, message_thread_id, file_id, caption)
-                                finally:
-                                    try:
-                                        await bot.delete_messages(tmp_target, tmp_msg.id)
-                                    except Exception:
-                                        pass
-                            else:
-                                raise
-                        else:
-                            raise
-                else:
-                    if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
-                        raise Cancelled("Cancelled before direct send document")
-                    await bot.send_document(
-                        chat_id=channel_id,
-                        document=file_path,
-                        caption=caption,
-                        progress=progress_callback,
-                        progress_args=(
-                            progress_msg,
-                            os.path.basename(file_path),
-                            os.path.getsize(file_path),
-                            start_time,
-                            1,
-                            10,
-                            None,
-                            "Uploading"
-                        )
-                    )
+                    pass
                 return True
 
+            # 📄 NON-VIDEO FILES
+            else:
+                send_kwargs = dict(
+                    chat_id=channel_id,
+                    document=file_path,
+                    caption=caption,
+                    progress=progress_callback,
+                    progress_args=(
+                        progress_msg,
+                        os.path.basename(file_path),
+                        os.path.getsize(file_path),
+                        start_time,
+                        1,
+                        lines,
+                        None,
+                        "Uploading"
+                    )
+                )
+                if message_thread_id is not None:
+                    send_kwargs["message_thread_id"] = message_thread_id
+
+                await bot.send_document(**send_kwargs)
+
+                try:
+                    if progress_msg:
+                        await asyncio.sleep(2)
+                        await progress_msg.delete()
+                except Exception:
+                    pass
+                return True
+
+        # ───── Exception handling / retry ─────
         except FloodWait as e:
             logger.warning(f"FloodWait during upload: sleeping for {e.value}s")
             await asyncio.sleep(e.value)
             continue
-
         except RPCError as e:
             logger.error(f"RPCError on upload (attempt {attempt+1}): {e}")
             if attempt == max_retries - 1:
                 return False
             await asyncio.sleep(2 ** attempt)
             continue
-
         except Cancelled as e:
             logger.info(str(e))
             return False
@@ -1605,8 +1279,8 @@ async def upload_file_to_channel(
             if attempt == max_retries - 1:
                 return False
             await asyncio.sleep(2 ** attempt)
-
     return False
+
 
 
 # ─── Command Handlers ──────────────────────────────────────────────────────────
