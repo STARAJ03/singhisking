@@ -1077,6 +1077,7 @@ async def upload_file_to_channel(
         stays roughly under max_size_gb. Uses negligible RAM (streamed).
         Returns list of part paths.
         """
+        import os, math, subprocess
 
         try:
             file_size = os.path.getsize(input_path)
@@ -1091,7 +1092,7 @@ async def upload_file_to_channel(
         base, ext = os.path.splitext(input_path)
         parts = []
 
-    # ── Probe duration (seconds)
+        # ── Probe duration (seconds)
         probe_cmd = [
             "ffprobe", "-v", "error",
             "-show_entries", "format=duration",
@@ -1133,6 +1134,7 @@ async def upload_file_to_channel(
 
         # fallback: if nothing split properly, return original
         return parts or [input_path]
+
 
     # ---------------------------------------------------------
 
