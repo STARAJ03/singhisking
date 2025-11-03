@@ -1053,7 +1053,33 @@ async def upload_file_to_channel(
                         try:
                             if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                                 raise Cancelled("Cancelled before bot API send video")
-                            await bot_api_send_video(channel_id, message_thread_id, file_path, caption, duration=duration, thumb_path=thumb)
+                            await bot.send_video(
+                                chat_id=channel_id,
+                                video=file_path,
+                                caption=caption,
+                                thumb=thumb,
+                                duration=duration,
+                                supports_streaming=True,
+                                progress=progress_callback,
+                                progress_args=(
+                                    progress_msg,
+                                    os.path.basename(file_path),
+                                    os.path.getsize(file_path),
+                                    time.time(),
+                                    1,
+                                    10,
+                                    None,
+                                    "Uploading"
+                                )
+                            )
+                            # ✅ Clean up progress message after successful upload
+                            try:
+                                if 'progress_msg' in locals() and progress_msg:
+                                    await asyncio.sleep(2)  # small delay so user sees 100%
+                                    await progress_msg.delete()
+                            except Exception:
+                                pass
+
                         except Exception as be:
                             if "413" in str(be) or "Request Entity Too Large" in str(be):
                                 # Hybrid fallback: upload once to get file_id, then delete and resend by id into topic
