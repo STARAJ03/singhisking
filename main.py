@@ -1147,7 +1147,7 @@ async def upload_file_to_channel(
                             duration=duration,
                             supports_streaming=True,
                             progress=progress_callback,
-                            progress_args=((progress_msg, time.time(), os.path.basename(file_path), "Uploading"))
+                            progress_args=( progress_msg, os.path.basename(file_path), os.path.getsize(file_path), start_time, 1, 10, None, "Uploading" )
                         )
                         # ✅ Clean up progress message after successful upload
                         try:
@@ -1892,7 +1892,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
     user_data.pop(user_id, None)
     active_downloads.pop(user_id, None)
     active_downloads[user_id] = False
-    await status_msg.edit_text("......─ DOWNLOADING ✩ COMPLETED ─......\n✅ All items processed for this Batch.")
+    await status_msg.edit_text("..─ DOWNLOADING ✩ COMPLETED ─..\n✅ All items processed for this Batch.")
     return True
 
 # ─── Handle potential bad‐time notifications on startup ────────────────────────
