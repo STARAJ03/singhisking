@@ -1109,6 +1109,14 @@ async def upload_file_to_channel(
                                         if cancel_user_id is not None and not active_downloads.get(cancel_user_id, True):
                                             raise Cancelled("Cancelled before Bot API resend video by id")
                                         await bot_api_send_video_by_id(channel_id, message_thread_id, file_id, caption, duration=duration)
+                                        # ✅ Delete progress message after successful upload (Bot API uploads)
+                                        try:
+                                            if 'progress_msg' in locals() and progress_msg:
+                                                await asyncio.sleep(2)  # short pause so it looks natural
+                                                await progress_msg.delete()
+                                        except Exception:
+                                            pass
+
                                     finally:
                                         try:
                                             await bot.delete_messages(tmp_target, tmp_msg.id)
