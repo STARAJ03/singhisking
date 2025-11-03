@@ -1459,29 +1459,32 @@ async def cancel_handler(client: Client, message: Message):
     else:
         await message.reply_text("⚠️ Could not cancel (job not found or already started).")
 
-@app.on_message(filters.command(["clear_queue", "add"]) & filters.private)
-async def clear_queue_handler(client: Client, message: Message):
+@app.on_message((filters.command(["clear_queue", "clear", "all"])) & filters.private)
+async def clear_jobs_handler(client: Client, message: Message):
+    """Handles:
+    - /clear or /clear_queue → clears pending jobs
+    - /clear_queue all or /all → clears ALL jobs
+    """
     if message.from_user.id not in ALLOWED_USER_IDS:
         return
 
     args = message.text.strip().split(maxsplit=1)
-    # Default: only clear pending unless explicitly "/clear_queue all" or "/add"
-    clear_all = (
-        (len(args) > 1 and args[1].strip().lower() == "all")
-        or message.command[0].lower() == "all"
-    )
+    scope = (args[1].strip().lower() if len(args) > 1 else None)
 
     col = await get_jobs_collection()
     if col is None:
         await message.reply_text("⚠️ Mongo unavailable.")
         return
 
-    if clear_all:
+    if scope == "all" or message.command[0] == "all":
+        # 🧹 Clear all jobs
         res = await col.delete_many({})
         await message.reply_text(f"🧹 Cleared ALL jobs: {res.deleted_count} deleted.")
     else:
+        # 🧹 Clear only pending jobs
         res = await col.delete_many({"status": "pending"})
         await message.reply_text(f"🧹 Cleared pending jobs: {res.deleted_count} deleted.")
+
 
 
 # ─── Check for incoming .txt files ──────────────────────────────────────────────
