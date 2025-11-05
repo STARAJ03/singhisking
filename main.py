@@ -1806,6 +1806,10 @@ async def start_processing(client: Client, message: Message, user_id: int):
                         if not thread_id:
                             raise Exception("Could not determine message_thread_id for created topic")
                         subject_threads[subject] = thread_id
+                        try:
+                            subject_counts[subject_norm] = 0
+                        except Exception:
+                            pass
                         if created_new_thread:
                             try:
                                 pic_url = get_subject_pic_url(subject)
@@ -1887,6 +1891,10 @@ async def start_processing(client: Client, message: Message, user_id: int):
                         if provisional_thread:
                             logger.info(f"Created forum topic '{subject}' with thread_id={provisional_thread} (detection previously false)")
                             subject_threads[subject] = provisional_thread
+                            try:
+                                subject_counts[subject_norm] = 0
+                            except Exception:
+                                pass
                             try:
                                 pic_url = get_subject_pic_url(subject)
                                 if pic_url:
