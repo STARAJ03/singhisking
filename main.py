@@ -56,8 +56,8 @@ logger = logging.getLogger(__name__)
 # ─── Configuration ──────────────────────────────────────────────────────────────
 API_ID = 27765349
 API_HASH = "9df1f705c8047ac0d723b29069a1332b"
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7443805715:AAGa4-fZN29EFf2w8WRmtOdbGXRHCJj7lxw")
-MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://staraj67890:0TcZjnlcXJprS3m6@cluster0.71wqxli.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+MONGODB_URI = os.getenv("MONGODB_URI", "")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "").strip()  # Optional: @publicgroupname
 LOG_CHANNEL_ID_RAW = os.getenv("LOG_CHANNEL_ID", "").strip()  # Optional: -100... or @channelusername
 try:
