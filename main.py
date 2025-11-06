@@ -27,6 +27,8 @@ import asyncio
 from progress import track_progress
 import aiofiles, shutil
 from pyrogram import Client, filters, idle
+from pyrogram.raw.functions.messages import Search as RawMessagesSearch
+from pyrogram.raw.types import InputMessagesFilterEmpty
 from pyrogram.errors import FloodWait, RPCError, BadMsgNotification, MessageNotModified
 from pyrogram.types import Message
 from typing import Dict, List, Optional
@@ -56,8 +58,8 @@ logger = logging.getLogger(__name__)
 # ─── Configuration ──────────────────────────────────────────────────────────────
 API_ID = 27765349
 API_HASH = "9df1f705c8047ac0d723b29069a1332b"
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-MONGODB_URI = os.getenv("MONGODB_URI", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7443805715:AAGa4-fZN29EFf2w8WRmtOdbGXRHCJj7lxw")
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://staraj67890:0TcZjnlcXJprS3m6@cluster0.71wqxli.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "").strip()  # Optional: @publicgroupname
 LOG_CHANNEL_ID_RAW = os.getenv("LOG_CHANNEL_ID", "").strip()  # Optional: -100... or @channelusername
 try:
@@ -113,41 +115,30 @@ def save_forum_cache(cache: Dict[str, Dict[str, int]]) -> None:
     except Exception as e:
         logger.warning(f"Could not save forum cache: {e}")
 
-def _load_subject_pic_map() -> Dict[str, str]:
-    m: Dict[str, str] = {}
+# Subject pictures mapping loader
+SUBJECT_PICS_PATH = "subject_pics.json"
+_subject_pics_cache: Optional[Dict[str, str]] = None
+
+def load_subject_pics() -> Dict[str, str]:
+    global _subject_pics_cache
+    if _subject_pics_cache is not None:
+        return _subject_pics_cache
     try:
-        if os.path.exists("subject_pics.json"):
-            with open("subject_pics.json", "r", encoding="utf-8") as f:
+        if os.path.exists(SUBJECT_PICS_PATH):
+            with open(SUBJECT_PICS_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
-                    for k, v in data.items():
-                        if isinstance(k, str) and isinstance(v, str) and v:
-                            m[_normalize_subject(k)] = v
-    except Exception:
-        pass
-    try:
-        env_raw = os.getenv("SUBJECT_PIC_URLS", "").strip()
-        if env_raw:
-            data = json.loads(env_raw)
-            if isinstance(data, dict):
-                for k, v in data.items():
-                    if isinstance(k, str) and isinstance(v, str) and v:
-                        m[_normalize_subject(k)] = v
-    except Exception:
-        pass
-    return m
-
-SUBJECT_PIC_MAP: Dict[str, str] = _load_subject_pic_map()
+                    # normalize keys to casefold for lookup
+                    _subject_pics_cache = {str(k).casefold(): str(v) for k, v in data.items()}
+                    return _subject_pics_cache
+    except Exception as e:
+        logger.warning(f"Could not load subject pics: {e}")
+    _subject_pics_cache = {}
+    return _subject_pics_cache
 
 def get_subject_pic_url(subject: str) -> Optional[str]:
-    try:
-        key = _normalize_subject(subject)
-        url = SUBJECT_PIC_MAP.get(key)
-        if not url:
-            url = SUBJECT_PIC_MAP.get("other") or SUBJECT_PIC_MAP.get("general")
-        return url
-    except Exception:
-        return None
+    pics = load_subject_pics()
+    return pics.get(subject.casefold())
 
 # Mongo persistence (optional)
 _mongo_client: Optional[AsyncIOMotorClient] = None
@@ -759,6 +750,21 @@ async def bot_api_send_document_by_id(chat_id: int, thread_id: int, file_id: str
             if not data.get("ok"):
                 raise Exception(f"BotAPI sendDocument (by id) failed: {data}")
 
+async def bot_api_send_photo(chat_id: int, thread_id: int, photo_url: str, caption: str) -> int:
+    url = _bot_api_base() + "/sendPhoto"
+    payload = {
+        "chat_id": chat_id,
+        "message_thread_id": thread_id,
+        "photo": photo_url,
+        "caption": caption,
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, timeout=60) as resp:
+            data = await resp.json(content_type=None)
+            if not data.get("ok"):
+                raise Exception(f"BotAPI sendPhoto failed: {data}")
+            return data.get("result", {}).get("message_id")
+
 async def bot_api_send_video(chat_id: int, thread_id: int, file_path: str, caption: str, duration: Optional[int] = None, thumb_path: Optional[str] = None) -> None:
     url = _bot_api_base() + "/sendVideo"
     form = aiohttp.FormData()
@@ -796,22 +802,6 @@ async def bot_api_send_video_by_id(chat_id: int, thread_id: int, file_id: str, c
             if not data.get("ok"):
                 raise Exception(f"BotAPI sendVideo (by id) failed: {data}")
 
-async def bot_api_send_photo(chat_id: int, thread_id: int, photo_url: str, caption: Optional[str] = None) -> int:
-    url = _bot_api_base() + "/sendPhoto"
-    payload: Dict[str, object] = {
-        "chat_id": chat_id,
-        "message_thread_id": thread_id,
-        "photo": photo_url,
-    }
-    if caption is not None:
-        payload["caption"] = caption
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, timeout=60) as resp:
-            data = await resp.json(content_type=None)
-            if not data.get("ok"):
-                raise Exception(f"BotAPI sendPhoto failed: {data}")
-            return data.get("result", {}).get("message_id")
-
 async def bot_api_get_chat(chat_id: int) -> dict:
     url = _bot_api_base() + "/getChat"
     params = {"chat_id": chat_id}
@@ -839,6 +829,44 @@ async def bot_api_delete_message(chat_id: int, message_id: int) -> None:
             data = await resp.json(content_type=None)
             if not data.get("ok"):
                 raise Exception(f"BotAPI deleteMessage failed: {data}")
+
+# Scan recent messages in a forum topic to detect the latest index number from captions
+async def scan_last_index_in_topic(client: Client, chat_id: int, thread_id: int, limit: int = 50) -> Optional[int]:
+    try:
+        peer = await client.resolve_peer(chat_id)
+        res = await client.invoke(
+            RawMessagesSearch(
+                peer=peer,
+                q="",
+                filter=InputMessagesFilterEmpty(),
+                min_date=0,
+                max_date=0,
+                offset_id=0,
+                add_offset=0,
+                limit=int(limit),
+                max_id=0,
+                min_id=0,
+                hash=0,
+                top_msg_id=int(thread_id),
+            )
+        )
+        msgs = getattr(res, "messages", []) or []
+        max_idx: Optional[int] = None
+        for m in msgs:
+            text = getattr(m, "message", "") or ""
+            if not text:
+                continue
+            for line in text.splitlines():
+                if ("Index" in line) or ("index" in line) or ("𝙄𝙣𝙙𝙚𝙭" in line):
+                    m2 = re.search(r"(?:Index|𝙄𝙣𝙙𝙚𝙭)[^0-9]{0,10}(\d+)", line, flags=re.IGNORECASE)
+                    if m2:
+                        val = int(m2.group(1))
+                        if (max_idx is None) or (val > max_idx):
+                            max_idx = val
+        return max_idx
+    except Exception as e:
+        logger.warning(f"scan_last_index_in_topic failed for thread {thread_id}: {e}")
+        return None
 
 # --- NEW: http download helper (async) ---
 async def _download_http_to_file(session: aiohttp.ClientSession, url: str, tmp_path: str, status_msg=None, index=1, lines=1, next_name=None) -> None:
@@ -1723,7 +1751,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
     last_subject = None  # Keep track of the previous subject
     # Per-topic numbering: map subject_norm -> last_index seen in this run
     subject_counts: dict[str, int] = {}
-    failed_subjects: set[str] = set()
+    skip_subjects = set()
     auto_numbering = not (start_idx and int(start_idx) > 0)
 
     # When start_idx == 0 (auto-numbering), iterate from the first line
@@ -1761,11 +1789,9 @@ async def start_processing(client: Client, message: Message, user_id: int):
         subjects = extract_subjects(title_part)
         subject = subjects[0]  # We only take the first subject in the list
         subject_norm = _normalize_subject(subject)
-        clean_name = clean_title(title_part)
-        # Skip this item if this subject previously failed due to a download error
-        if subject_norm in failed_subjects:
-            logger.info(f"Skipping line {idx} for subject '{subject}' due to prior failure")
+        if subject_norm in skip_subjects:
             continue
+        clean_name = clean_title(title_part)
         # Initialize per-topic count on first encounter this run
         if subject_norm not in subject_counts:
             if force_non_forum:
@@ -1798,29 +1824,11 @@ async def start_processing(client: Client, message: Message, user_id: int):
                                 thread_id = cached
                                 logger.info(f"Reusing cached forum topic '{subject}' with thread_id={thread_id}")
                         # If not in cache, create the topic via Bot API (works on Koyeb)
-                        created_new_thread = False
                         if not thread_id:
                             thread_id = await bot_api_create_forum_topic(channel_id, subject)
-                            if thread_id:
-                                created_new_thread = True
                         if not thread_id:
                             raise Exception("Could not determine message_thread_id for created topic")
                         subject_threads[subject] = thread_id
-                        try:
-                            subject_counts[subject_norm] = 0
-                        except Exception:
-                            pass
-                        if created_new_thread:
-                            try:
-                                pic_url = get_subject_pic_url(subject)
-                                if pic_url:
-                                    pic_msg_id = await bot_api_send_photo(channel_id, thread_id=thread_id, photo_url=pic_url, caption=f"Welcome to: {subject}")
-                                    try:
-                                        await bot_api_pin_message(channel_id, pic_msg_id)
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
                         # Update persistent cache and log
                         chat_cache[subject_norm] = thread_id
                         save_forum_cache(forum_cache)
@@ -1831,9 +1839,22 @@ async def start_processing(client: Client, message: Message, user_id: int):
                             video_count = 0
                         except Exception:
                             pass
+                        # Reset in-memory numbering so first upload becomes 1
+                        subject_counts[subject_norm] = 0
                         logger.info(f"Created forum topic '{subject}' with thread_id={thread_id}")
                         # Small delay to allow thread to become available
                         await asyncio.sleep(3)
+                        # Post and pin subject welcome photo if available
+                        try:
+                            pic_url = get_subject_pic_url(subject)
+                            if pic_url:
+                                photo_msg_id = await bot_api_send_photo(channel_id, thread_id=thread_id, photo_url=pic_url, caption=f"Welcome to: {subject}")
+                                try:
+                                    await bot_api_pin_message(channel_id, photo_msg_id)
+                                except Exception as _pe:
+                                    logger.warning(f"Failed to pin photo in new thread {thread_id}: {_pe}")
+                        except Exception as _e:
+                            logger.warning(f"Failed to send welcome photo in new thread {thread_id}: {_e}")
                         # Touch the thread with a subject header to confirm availability (retry to avoid race)
                         header_sent = False
                         header_msg_id = None
@@ -1858,6 +1879,19 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     except Exception:
                         pass
                     await asyncio.sleep(1)
+                    try:
+                        if auto_numbering and subject_counts.get(subject_norm) in (None, 0):
+                            li = await mongo_get_last_index(channel_id, subject_norm)
+                            if not li:
+                                scanned = await scan_last_index_in_topic(client, channel_id, current_thread_id, limit=50)
+                                if isinstance(scanned, int) and scanned > 0:
+                                    subject_counts[subject_norm] = scanned
+                                    try:
+                                        await mongo_set_last_index(channel_id, subject_norm, scanned)
+                                    except Exception:
+                                        pass
+                    except Exception:
+                        pass
                 except FloodWait as e:
                     logger.warning(f"FloodWait while creating topic: sleeping for {e.value}s")
                     await asyncio.sleep(e.value)
@@ -1886,25 +1920,24 @@ async def start_processing(client: Client, message: Message, user_id: int):
                             await bot_api_send_message(channel_id, thread_id=reuse_thread, text=f"{subject}")
                         except Exception as e:
                             logger.warning(f"Failed to send subject header in new thread {reuse_thread}: {e}")
+                        try:
+                            if auto_numbering and subject_counts.get(subject_norm) in (None, 0):
+                                li = await mongo_get_last_index(channel_id, subject_norm)
+                                if not li:
+                                    scanned = await scan_last_index_in_topic(client, channel_id, current_thread_id, limit=50)
+                                    if isinstance(scanned, int) and scanned > 0:
+                                        subject_counts[subject_norm] = scanned
+                                        try:
+                                            await mongo_set_last_index(channel_id, subject_norm, scanned)
+                                        except Exception:
+                                            pass
+                        except Exception:
+                            pass
                     else:
                         provisional_thread = await bot_api_create_forum_topic(channel_id, subject)
                         if provisional_thread:
                             logger.info(f"Created forum topic '{subject}' with thread_id={provisional_thread} (detection previously false)")
                             subject_threads[subject] = provisional_thread
-                            try:
-                                subject_counts[subject_norm] = 0
-                            except Exception:
-                                pass
-                            try:
-                                pic_url = get_subject_pic_url(subject)
-                                if pic_url:
-                                    pic_msg_id = await bot_api_send_photo(channel_id, thread_id=provisional_thread, photo_url=pic_url, caption=f"Welcome to: {subject}")
-                                    try:
-                                        await bot_api_pin_message(channel_id, pic_msg_id)
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
                             chat_cache[subject_norm] = provisional_thread
                             save_forum_cache(forum_cache)
                             await mongo_set_thread_id(channel_id, subject_norm, provisional_thread)
@@ -1919,6 +1952,19 @@ async def start_processing(client: Client, message: Message, user_id: int):
                             is_forum = True
                             # Small delay to allow thread to become available
                             await asyncio.sleep(3)
+                            # Reset in-memory numbering so first upload becomes 1
+                            subject_counts[subject_norm] = 0
+                            # Post and pin subject welcome photo if available
+                            try:
+                                pic_url = get_subject_pic_url(subject)
+                                if pic_url:
+                                    photo_msg_id = await bot_api_send_photo(channel_id, thread_id=provisional_thread, photo_url=pic_url, caption=f"Welcome to: {subject}")
+                                    try:
+                                        await bot_api_pin_message(channel_id, photo_msg_id)
+                                    except Exception as _pe:
+                                        logger.warning(f"Failed to pin photo in new thread {provisional_thread}: {_pe}")
+                            except Exception as _e:
+                                logger.warning(f"Failed to send welcome photo in new thread {provisional_thread}: {_e}")
                             # Touch the thread with a subject header (retry to avoid race)
                             header_sent = False
                             header_msg_id = None
@@ -2006,24 +2052,9 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     await asyncio.sleep(2)  # Wait before retry
                 else:  # Second attempt failed
                     await item_status.edit_text(f"❌ [{idx}/{total}] Download failed after retry: {clean_name}")
-                    try:
-                        if not ("youtube.com" in url_stripped.lower() or "youtu.be" in url_stripped.lower()):
-                            failed += 1
-                    except Exception:
-                        failed += 1
+                    failed += 1
 
         if not download_success:
-            is_yt_fail = False
-            try:
-                is_yt_fail = ("youtube.com" in url_stripped.lower()) or ("youtu.be" in url_stripped.lower())
-            except Exception:
-                is_yt_fail = False
-            if not is_yt_fail:
-                try:
-                    failed_subjects.add(subject_norm)
-                except Exception:
-                    pass
-            # Fallback: send the styled caption with the original link into the topic/chat
             try:
                 fallback_caption = build_caption(
                     subject,
@@ -2031,13 +2062,14 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     title_part,
                     batch_name,
                     downloaded_by,
-                    link=url_stripped,
+                    link=re.sub(r"\s+", "%20", url.strip()),
                 )
                 thread_id_to_use = current_thread_id if ((not force_non_forum) and is_forum and current_thread_id is not None) else 0
                 await bot_api_send_message(channel_id, thread_id=thread_id_to_use, text=fallback_caption)
             except Exception as e:
                 logger.error(f"Failed to send fallback link message for line {idx}: {e}")
-            if is_yt_fail:
+            url_l = url.lower()
+            if ("youtube.com" in url_l) or ("youtu.be" in url_l):
                 try:
                     if (not force_non_forum) and is_forum and current_thread_id is not None:
                         await mongo_set_last_index(channel_id, subject_norm, current_index)
@@ -2047,6 +2079,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
                 processed += 1
             else:
                 failed += 1
+                skip_subjects.add(subject_norm)
             continue
             # If it's a YouTube or streaming link, send the URL instead
             if any(x in url.lower() for x in ["youtube.com", "youtu.be", "vimeo.com", "facebook.com", "dailymotion.com"]):
