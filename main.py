@@ -27,8 +27,6 @@ import asyncio
 from progress import track_progress
 import aiofiles, shutil
 from pyrogram import Client, filters, idle
-from pyrogram.raw.functions.messages import Search as RawMessagesSearch
-from pyrogram.raw.types import InputMessagesFilterEmpty
 from pyrogram.errors import FloodWait, RPCError, BadMsgNotification, MessageNotModified
 from pyrogram.types import Message
 from typing import Dict, List, Optional
@@ -58,8 +56,8 @@ logger = logging.getLogger(__name__)
 # ─── Configuration ──────────────────────────────────────────────────────────────
 API_ID = 27765349
 API_HASH = "9df1f705c8047ac0d723b29069a1332b"
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-MONGODB_URI = os.getenv("MONGODB_URI", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7443805715:AAGa4-fZN29EFf2w8WRmtOdbGXRHCJj7lxw")
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://staraj67890:0TcZjnlcXJprS3m6@cluster0.71wqxli.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "").strip()  # Optional: @publicgroupname
 LOG_CHANNEL_ID_RAW = os.getenv("LOG_CHANNEL_ID", "").strip()  # Optional: -100... or @channelusername
 try:
@@ -115,30 +113,43 @@ def save_forum_cache(cache: Dict[str, Dict[str, int]]) -> None:
     except Exception as e:
         logger.warning(f"Could not save forum cache: {e}")
 
-# Subject pictures mapping loader
-SUBJECT_PICS_PATH = "subject_pics.json"
 _subject_pics_cache: Optional[Dict[str, str]] = None
+
+def cache_get_initialized(chat_cache: Dict[str, int], subject_norm: str) -> Optional[bool]:
+    key = f"__init__:{subject_norm}"
+    val = chat_cache.get(key)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, int):
+        return bool(val)
+    return None
+
+def cache_set_initialized(forum_cache: Dict[str, Dict[str, int]], chat_key: str, subject_norm: str, value: bool) -> None:
+    try:
+        if chat_key not in forum_cache:
+            forum_cache[chat_key] = {}
+        forum_cache[chat_key][f"__init__:{subject_norm}"] = bool(value)
+        save_forum_cache(forum_cache)
+    except Exception:
+        pass
 
 def load_subject_pics() -> Dict[str, str]:
     global _subject_pics_cache
     if _subject_pics_cache is not None:
         return _subject_pics_cache
     try:
-        if os.path.exists(SUBJECT_PICS_PATH):
-            with open(SUBJECT_PICS_PATH, "r", encoding="utf-8") as f:
+        path = os.path.join(os.getcwd(), "subject_pics.json")
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
-                    # normalize keys to casefold for lookup
-                    _subject_pics_cache = {str(k).casefold(): str(v) for k, v in data.items()}
-                    return _subject_pics_cache
+                    lower_map = {str(k).strip().casefold(): str(v).strip() for k, v in data.items() if v}
+                    _subject_pics_cache = lower_map
+                    return lower_map
     except Exception as e:
-        logger.warning(f"Could not load subject pics: {e}")
+        logger.warning(f"Could not load subject_pics.json: {e}")
     _subject_pics_cache = {}
     return _subject_pics_cache
-
-def get_subject_pic_url(subject: str) -> Optional[str]:
-    pics = load_subject_pics()
-    return pics.get(subject.casefold())
 
 # Mongo persistence (optional)
 _mongo_client: Optional[AsyncIOMotorClient] = None
@@ -497,6 +508,31 @@ async def mongo_set_last_index(chat_id: int, subject_norm: str, last_index: int)
         update["$set"]["instance"] = INSTANCE_KEY
     await col.update_one(filt, update, upsert=True)
 
+async def mongo_get_initialized(chat_id: int, subject_norm: str) -> Optional[bool]:
+    col = await get_mongo_collection()
+    if col is None:
+        return None
+    query = {"chat_id": chat_id, "subject_norm": subject_norm}
+    if INSTANCE_KEY:
+        query["instance"] = INSTANCE_KEY
+    doc = await col.find_one(query, projection={"initialized": 1})
+    if doc is None:
+        return None
+    val = doc.get("initialized")
+    return bool(val) if isinstance(val, (bool, int)) else None
+
+async def mongo_set_initialized(chat_id: int, subject_norm: str, value: bool = True) -> None:
+    col = await get_mongo_collection()
+    if col is None:
+        return
+    filt = {"chat_id": chat_id, "subject_norm": subject_norm}
+    if INSTANCE_KEY:
+        filt["instance"] = INSTANCE_KEY
+    update = {"$set": {"initialized": bool(value), "updated_at": int(time.time())}}
+    if INSTANCE_KEY:
+        update["$set"]["instance"] = INSTANCE_KEY
+    await col.update_one(filt, update, upsert=True)
+
 @app.on_message(filters.command("ping") & filters.private)
 async def ping_handler(client: Client, message: Message):
     await message.reply_text("pong")
@@ -829,44 +865,6 @@ async def bot_api_delete_message(chat_id: int, message_id: int) -> None:
             data = await resp.json(content_type=None)
             if not data.get("ok"):
                 raise Exception(f"BotAPI deleteMessage failed: {data}")
-
-# Scan recent messages in a forum topic to detect the latest index number from captions
-async def scan_last_index_in_topic(client: Client, chat_id: int, thread_id: int, limit: int = 50) -> Optional[int]:
-    try:
-        peer = await client.resolve_peer(chat_id)
-        res = await client.invoke(
-            RawMessagesSearch(
-                peer=peer,
-                q="",
-                filter=InputMessagesFilterEmpty(),
-                min_date=0,
-                max_date=0,
-                offset_id=0,
-                add_offset=0,
-                limit=int(limit),
-                max_id=0,
-                min_id=0,
-                hash=0,
-                top_msg_id=int(thread_id),
-            )
-        )
-        msgs = getattr(res, "messages", []) or []
-        max_idx: Optional[int] = None
-        for m in msgs:
-            text = getattr(m, "message", "") or ""
-            if not text:
-                continue
-            for line in text.splitlines():
-                if ("Index" in line) or ("index" in line) or ("𝙄𝙣𝙙𝙚𝙭" in line):
-                    m2 = re.search(r"(?:Index|𝙄𝙣𝙙𝙚𝙭)[^0-9]{0,10}(\d+)", line, flags=re.IGNORECASE)
-                    if m2:
-                        val = int(m2.group(1))
-                        if (max_idx is None) or (val > max_idx):
-                            max_idx = val
-        return max_idx
-    except Exception as e:
-        logger.warning(f"scan_last_index_in_topic failed for thread {thread_id}: {e}")
-        return None
 
 # --- NEW: http download helper (async) ---
 async def _download_http_to_file(session: aiohttp.ClientSession, url: str, tmp_path: str, status_msg=None, index=1, lines=1, next_name=None) -> None:
@@ -1733,6 +1731,7 @@ async def start_processing(client: Client, message: Message, user_id: int):
     if chat_key not in forum_cache:
         forum_cache[chat_key] = {}
     chat_cache = forum_cache[chat_key]
+    subject_pics = load_subject_pics()
 
     # Mark as active
     active_downloads[user_id] = True
@@ -1751,8 +1750,8 @@ async def start_processing(client: Client, message: Message, user_id: int):
     last_subject = None  # Keep track of the previous subject
     # Per-topic numbering: map subject_norm -> last_index seen in this run
     subject_counts: dict[str, int] = {}
-    skip_subjects = set()
     auto_numbering = not (start_idx and int(start_idx) > 0)
+    blocked_subjects: set[str] = set()
 
     # When start_idx == 0 (auto-numbering), iterate from the first line
     iter_start_line = start_idx if (start_idx and start_idx > 0) else 1
@@ -1789,9 +1788,10 @@ async def start_processing(client: Client, message: Message, user_id: int):
         subjects = extract_subjects(title_part)
         subject = subjects[0]  # We only take the first subject in the list
         subject_norm = _normalize_subject(subject)
-        if subject_norm in skip_subjects:
-            continue
         clean_name = clean_title(title_part)
+
+        if subject_norm in blocked_subjects:
+            continue
         # Initialize per-topic count on first encounter this run
         if subject_norm not in subject_counts:
             if force_non_forum:
@@ -1839,38 +1839,78 @@ async def start_processing(client: Client, message: Message, user_id: int):
                             video_count = 0
                         except Exception:
                             pass
-                        # Reset in-memory numbering so first upload becomes 1
-                        subject_counts[subject_norm] = 0
                         logger.info(f"Created forum topic '{subject}' with thread_id={thread_id}")
                         # Small delay to allow thread to become available
                         await asyncio.sleep(3)
-                        # Post and pin subject welcome photo if available
-                        try:
-                            pic_url = get_subject_pic_url(subject)
-                            if pic_url:
-                                photo_msg_id = await bot_api_send_photo(channel_id, thread_id=thread_id, photo_url=pic_url, caption=f"Welcome to: {subject}")
-                                try:
-                                    await bot_api_pin_message(channel_id, photo_msg_id)
-                                except Exception as _pe:
-                                    logger.warning(f"Failed to pin photo in new thread {thread_id}: {_pe}")
-                        except Exception as _e:
-                            logger.warning(f"Failed to send welcome photo in new thread {thread_id}: {_e}")
-                        # Touch the thread with a subject header to confirm availability (retry to avoid race)
+                        # Touch the thread with a subject header to confirm availability (robust retry)
                         header_sent = False
                         header_msg_id = None
-                        for _r in range(8):
+                        for _r in range(15):
                             try:
                                 header_msg_id = await bot_api_send_message(channel_id, thread_id=thread_id, text=f"{subject}")
                                 header_sent = True
                                 break
                             except Exception as e:
-                                if _r == 7:
+                                if _r == 14:
                                     logger.warning(f"Failed to send subject header in new thread {thread_id}: {e}")
                                     break
-                                await asyncio.sleep(1.0)
+                                await asyncio.sleep(1.0 + 0.5 * _r)
+                        # After header, try sending welcome photo (retry separately). If header wasn't sent, raise to fallback
+                        if not header_sent:
+                            try:
+                                fresh_id = await bot_api_create_forum_topic(channel_id, subject)
+                                if fresh_id:
+                                    subject_threads[subject] = fresh_id
+                                    chat_cache[subject_norm] = fresh_id
+                                    save_forum_cache(forum_cache)
+                                    await mongo_set_thread_id(channel_id, subject_norm, fresh_id)
+                                    thread_id = fresh_id
+                                    header_sent = False
+                                    header_msg_id = None
+                                    for _r in range(15):
+                                        try:
+                                            header_msg_id = await bot_api_send_message(channel_id, thread_id=thread_id, text=f"{subject}")
+                                            header_sent = True
+                                            break
+                                        except Exception as e:
+                                            if _r == 14:
+                                                logger.warning(f"Failed to send subject header in fresh thread {thread_id}: {e}")
+                                                break
+                                            await asyncio.sleep(1.0 + 0.5 * _r)
+                            except Exception:
+                                pass
+                            if not header_sent:
+                                raise Exception("header_not_ready")
+                        try:
+                            initialized = await mongo_get_initialized(channel_id, subject_norm)
+                        except Exception:
+                            initialized = None
+                        if not initialized:
+                            pic_url = subject_pics.get(subject_norm)
+                            if pic_url:
+                                photo_pinned = False
+                                for _p in range(5):
+                                    try:
+                                        photo_id = await bot_api_send_photo(channel_id, thread_id=thread_id, photo_url=pic_url, caption=f"Welcome to: {subject}")
+                                        try:
+                                            await bot_api_pin_message(channel_id, photo_id)
+                                        except Exception as _pe:
+                                            logger.warning(f"Failed to pin subject photo in thread {thread_id}: {_pe}")
+                                        photo_pinned = True
+                                        break
+                                    except Exception as _e:
+                                        if _p == 4:
+                                            logger.warning(f"Failed to send subject photo for '{subject}': {_e}")
+                                            break
+                                        await asyncio.sleep(1.0 + 0.5 * _p)
+                            subject_counts[subject_norm] = 0
+                        try:
+                            await mongo_set_initialized(channel_id, subject_norm, True)
+                        except Exception:
+                            pass
                     else:
                         logger.info(f"Reusing forum topic '{subject}' with thread_id={thread_id}")
-                    current_thread_id = thread_id
+                    current_thread_id = thread_id if header_sent else None
                     last_subject = subject
                     # If header wasn't confirmed, give the thread a tiny bit more time before the first upload
                     try:
@@ -1879,19 +1919,6 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     except Exception:
                         pass
                     await asyncio.sleep(1)
-                    try:
-                        if auto_numbering and subject_counts.get(subject_norm) in (None, 0):
-                            li = await mongo_get_last_index(channel_id, subject_norm)
-                            if not li:
-                                scanned = await scan_last_index_in_topic(client, channel_id, current_thread_id, limit=50)
-                                if isinstance(scanned, int) and scanned > 0:
-                                    subject_counts[subject_norm] = scanned
-                                    try:
-                                        await mongo_set_last_index(channel_id, subject_norm, scanned)
-                                    except Exception:
-                                        pass
-                    except Exception:
-                        pass
                 except FloodWait as e:
                     logger.warning(f"FloodWait while creating topic: sleeping for {e.value}s")
                     await asyncio.sleep(e.value)
@@ -1920,19 +1947,6 @@ async def start_processing(client: Client, message: Message, user_id: int):
                             await bot_api_send_message(channel_id, thread_id=reuse_thread, text=f"{subject}")
                         except Exception as e:
                             logger.warning(f"Failed to send subject header in new thread {reuse_thread}: {e}")
-                        try:
-                            if auto_numbering and subject_counts.get(subject_norm) in (None, 0):
-                                li = await mongo_get_last_index(channel_id, subject_norm)
-                                if not li:
-                                    scanned = await scan_last_index_in_topic(client, channel_id, current_thread_id, limit=50)
-                                    if isinstance(scanned, int) and scanned > 0:
-                                        subject_counts[subject_norm] = scanned
-                                        try:
-                                            await mongo_set_last_index(channel_id, subject_norm, scanned)
-                                        except Exception:
-                                            pass
-                        except Exception:
-                            pass
                     else:
                         provisional_thread = await bot_api_create_forum_topic(channel_id, subject)
                         if provisional_thread:
@@ -1952,32 +1966,49 @@ async def start_processing(client: Client, message: Message, user_id: int):
                             is_forum = True
                             # Small delay to allow thread to become available
                             await asyncio.sleep(3)
-                            # Reset in-memory numbering so first upload becomes 1
-                            subject_counts[subject_norm] = 0
-                            # Post and pin subject welcome photo if available
-                            try:
-                                pic_url = get_subject_pic_url(subject)
-                                if pic_url:
-                                    photo_msg_id = await bot_api_send_photo(channel_id, thread_id=provisional_thread, photo_url=pic_url, caption=f"Welcome to: {subject}")
-                                    try:
-                                        await bot_api_pin_message(channel_id, photo_msg_id)
-                                    except Exception as _pe:
-                                        logger.warning(f"Failed to pin photo in new thread {provisional_thread}: {_pe}")
-                            except Exception as _e:
-                                logger.warning(f"Failed to send welcome photo in new thread {provisional_thread}: {_e}")
-                            # Touch the thread with a subject header (retry to avoid race)
+                            # Touch the thread with a subject header to confirm availability (robust retry)
                             header_sent = False
                             header_msg_id = None
-                            for _r in range(8):
+                            for _r in range(15):
                                 try:
                                     header_msg_id = await bot_api_send_message(channel_id, thread_id=provisional_thread, text=f"{subject}")
                                     header_sent = True
                                     break
                                 except Exception as e:
-                                    if _r == 7:
+                                    if _r == 14:
                                         logger.warning(f"Failed to send subject header in new thread {provisional_thread}: {e}")
                                         break
-                                    await asyncio.sleep(1.0)
+                                    await asyncio.sleep(1.0 + 0.5 * _r)
+                            if not header_sent:
+                                try:
+                                    fresh_id = await bot_api_create_forum_topic(channel_id, subject)
+                                    if fresh_id:
+                                        subject_threads[subject] = fresh_id
+                                        chat_cache[subject_norm] = fresh_id
+                                        save_forum_cache(forum_cache)
+                                        await mongo_set_thread_id(channel_id, subject_norm, fresh_id)
+                                        provisional_thread = fresh_id
+                                        header_sent = False
+                                        header_msg_id = None
+                                        for _r in range(15):
+                                            try:
+                                                header_msg_id = await bot_api_send_message(channel_id, thread_id=provisional_thread, text=f"{subject}")
+                                                header_sent = True
+                                                break
+                                            except Exception as e:
+                                                if _r == 14:
+                                                    logger.warning(f"Failed to send subject header in fresh thread {provisional_thread}: {e}")
+                                            break
+                                except Exception as _e:
+                                    if _p == 4:
+                                        logger.warning(f"Failed to send subject photo for '{subject}': {_e}")
+                                        break
+                                    await asyncio.sleep(1.0 + 0.5 * _p)
+                                subject_counts[subject_norm] = 0
+                            try:
+                                await mongo_set_initialized(channel_id, subject_norm, True)
+                            except Exception:
+                                pass
                             # If header wasn't confirmed, give the thread a tiny bit more time before the first upload
                             try:
                                 if not header_sent:
@@ -2062,25 +2093,26 @@ async def start_processing(client: Client, message: Message, user_id: int):
                     title_part,
                     batch_name,
                     downloaded_by,
-                    link=re.sub(r"\s+", "%20", url.strip()),
+                    link=url_stripped,
                 )
                 thread_id_to_use = current_thread_id if ((not force_non_forum) and is_forum and current_thread_id is not None) else 0
                 await bot_api_send_message(channel_id, thread_id=thread_id_to_use, text=fallback_caption)
             except Exception as e:
                 logger.error(f"Failed to send fallback link message for line {idx}: {e}")
-            url_l = url.lower()
-            if ("youtube.com" in url_l) or ("youtu.be" in url_l):
-                try:
-                    if (not force_non_forum) and is_forum and current_thread_id is not None:
-                        await mongo_set_last_index(channel_id, subject_norm, current_index)
-                except Exception:
-                    pass
+
+            try:
+                is_yt = any(x in (url_stripped or "").lower() for x in ["youtube.com", "youtu.be"]) 
+            except Exception:
+                is_yt = False
+
+            if is_yt:
                 subject_counts[subject_norm] = current_index
                 processed += 1
+                continue
             else:
+                blocked_subjects.add(subject_norm)
                 failed += 1
-                skip_subjects.add(subject_norm)
-            continue
+                continue
             # If it's a YouTube or streaming link, send the URL instead
             if any(x in url.lower() for x in ["youtube.com", "youtu.be", "vimeo.com", "facebook.com", "dailymotion.com"]):
                 try:
